@@ -74,3 +74,19 @@ def set_mode(func: Callable, mode: str) -> Tuple[Callable, str]:
 @func_with_args("toggle_selection_end")
 def toggle_selection_end(func: Callable, same_line: str = '') -> Tuple[Callable, Tuple[str,]]:
     return func, (same_line,)
+
+
+@func_with_args('search_start')
+def search_start(func: Callable, direction: str) -> Tuple[Callable, Tuple[str,]]:
+    assert direction in ['forward', 'backward']
+    return func, (direction,)
+
+
+@func_with_args('search_next')
+def search_next(func: Callable) -> Tuple[Callable, Tuple]:
+    return func, ()
+
+
+@func_with_args('search_prev')
+def search_prev(func: Callable) -> Tuple[Callable, Tuple]:
+    return func, ()

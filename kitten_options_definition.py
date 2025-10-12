@@ -125,6 +125,24 @@ In block mode, this moves to the other corner on the same line.
 In other modes, behaves like o.'''
 map('Toggle selection end same line', 'toggle_selection_end O toggle_selection_end True', long_text=long_text)
 
+long_text = '''
+Start forward search (vim / command).
+Enter search query and press Enter to jump to first match.'''
+map('Search forward', 'search_start / search_start forward', long_text=long_text)
+
+long_text = '''
+Start backward search (vim ? command).
+Enter search query and press Enter to jump to first match.'''
+map('Search backward', 'search_start ? search_start backward', long_text=long_text)
+
+long_text = '''
+Jump to next search match (vim n command).'''
+map('Search next', 'search_next n search_next', long_text=long_text)
+
+long_text = '''
+Jump to previous search match (vim N command).'''
+map('Search prev', 'search_prev N search_prev', long_text=long_text)
+
 egr()  # }}}
 
 agr('behavior', 'Behavior')  # {{{

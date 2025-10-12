@@ -470,6 +470,11 @@ class GrabHandler(Handler):
         # s — secondary
         self.copy_to = {'primary': b'p', 'secondary': b's'}.get(args.copy_to, b'c')
 
+        # 搜索状态
+        self.search_mode = None           # type: Optional[str]  # None, 'forward', 'backward'
+        self.search_query = ''            # type: str  # 当前输入的搜索词
+        self.search_matches = []          # type: List[Position]  # 所有匹配位置列表
+        self.current_match_index = -1     # type: int  # 当前匹配项索引
 
         for spec, action in self.opts.map:
             self.add_shortcut(action, spec)
@@ -519,7 +524,33 @@ class GrabHandler(Handler):
             getattr(self.mark, 'x', None), getattr(self.mark, 'y', None),
             getattr(self.mark, 'top_line', None),
             self.point.x, self.point.y, self.point.top_line))
-        self.cmd.set_cursor_position(self.point.x, self.point.y)
+
+        # 如果处于搜索输入模式，在屏幕底部显示搜索提示符
+        if self.search_mode is not None:
+            # 搜索提示符：'/' 表示向前搜索，'?' 表示向后搜索
+            prompt = '/' if self.search_mode == 'forward' else '?'
+            search_line = '{}{}'.format(prompt, self.search_query)
+
+            # 在屏幕最后一行显示搜索提示
+            bottom_y = self.screen_size.rows - 1
+            self.cmd.set_cursor_position(0, bottom_y)
+
+            # 使用反色高亮 (\x1b[7m)，不清除整行
+            self.print('\x1b[7m{}\x1b[m'.format(search_line), end='')
+
+            # 如果输入变短，清除多余的旧字符（使用 wcswidth 计算显示宽度）
+            display_width = wcswidth(search_line)
+            if hasattr(self, '_prev_search_len') and self._prev_search_len > display_width:
+                spaces_to_clear = self._prev_search_len - display_width
+                self.print(' ' * spaces_to_clear, end='')
+            self._prev_search_len = display_width
+
+            # 将光标定位到搜索查询的末尾（使用 wcswidth 计算显示宽度）
+            cursor_x = display_width
+            self.cmd.set_cursor_position(cursor_x, bottom_y)
+        else:
+            # 正常模式：将光标定位到 point 位置
+            self.cmd.set_cursor_position(self.point.x, self.point.y)
 
     def _redraw_lines(self, lines: Iterable[AbsoluteLine]) -> None:
         for line in lines:
@@ -539,7 +570,54 @@ class GrabHandler(Handler):
     def perform_default_key_action(self, key_event: KeyEvent) -> bool:
         return False
 
+    def _handle_search_input(self, key_event: KeyEvent) -> None:
+        """处理搜索输入模式下的键盘事件"""
+        if key_event.type not in [kk.PRESS, kk.REPEAT]:
+            return
+
+        key = key_event.key
+        mods = key_event.mods
+
+        # Enter 键：确认搜索
+        if key == 'ENTER':
+            if self.search_query:
+                self._perform_search()
+            else:
+                # 空查询，取消搜索模式
+                self.search_mode = None
+                self._redraw()
+            return
+
+        # Escape 键：取消搜索
+        if key == 'ESCAPE':
+            self.search_mode = None
+            self.search_query = ''
+            # 清除 marker 高亮
+            self._clear_search_marker()
+            self._redraw()
+            return
+
+        # Backspace 键：删除最后一个字符
+        if key == 'BACKSPACE':
+            if self.search_query:
+                self.search_query = self.search_query[:-1]
+                self._redraw()
+            return
+
+        # 可打印字符：添加到搜索查询
+        # key_event.text 包含实际输入的字符（支持输入法一次输入多个字符）
+        if key_event.text:
+            # 只接受所有字符都是可打印的字符串
+            if all(c.isprintable() for c in key_event.text):
+                self.search_query += key_event.text
+                self._redraw()
+
     def on_key_event(self, key_event: KeyEvent, in_bracketed_paste: bool = False) -> None:
+        # 如果处于搜索输入模式，特殊处理键盘事件
+        if self.search_mode is not None:
+            self._handle_search_input(key_event)
+            return
+
         action = self.shortcut_action(key_event)
         if (key_event.type not in [kk.PRESS, kk.REPEAT]
                 or action is None):
@@ -551,6 +629,8 @@ class GrabHandler(Handler):
         getattr(self, func)(*args)
 
     def quit(self, *args: Any) -> None:
+        # 退出时清除搜索 marker
+        self._clear_search_marker()
         self.quit_loop(1)
 
     region_types = {'stream':   StreamRegion,
@@ -744,6 +824,156 @@ class GrabHandler(Handler):
             # 否则只重绘受影响的行
             self._redraw_lines(self.mark_type.lines_affected(
                 self.mark, old_point, self.point))
+
+    def _set_search_marker(self, query: str) -> None:
+        """使用 Kitty marker 功能高亮搜索匹配项"""
+        import subprocess
+        # 使用 itext 类型进行大小写不敏感匹配
+        # mark group 3 可以在 kitty.conf 中配置颜色
+        subprocess.run(
+            ['kitten', '@', 'create-marker', '--self=yes', 'itext', '3', query],
+            capture_output=True,
+            timeout=1,
+            check=True
+        )
+
+    def _clear_search_marker(self) -> None:
+        """移除 Kitty marker 高亮"""
+        import subprocess
+        subprocess.run(
+            ['kitten', '@', 'remove-marker', '--self=yes'],
+            capture_output=True,
+            timeout=1,
+            check=True
+        )
+
+    def search_start(self, direction: str) -> None:
+        """进入搜索输入模式（vim / 或 ? 命令）"""
+        # 清除之前的 marker（如果有）
+        self._clear_search_marker()
+
+        self.search_mode = direction
+        self.search_query = ''
+        self.search_matches = []
+        self.current_match_index = -1
+        self._prev_search_len = 1  # 初始长度为提示符 '/' 或 '?'
+        self._redraw()
+
+    def _perform_search(self) -> None:
+        """执行搜索，找到所有匹配并跳转到第一个"""
+        if not self.search_query:
+            return
+
+        self.search_matches = []
+        query_lower = self.search_query.lower()
+
+        # 遍历所有行查找匹配
+        for line_idx, line in enumerate(self.lines):
+            line_num = line_idx + 1  # 行号从1开始
+            plain = unstyled(line)
+            plain_lower = plain.lower()
+
+            # 在当前行中查找所有匹配位置
+            start_pos = 0
+            while True:
+                pos = plain_lower.find(query_lower, start_pos)
+                if pos == -1:
+                    break
+
+                # 计算显示宽度（处理宽字符）
+                col = wcswidth(plain[:pos])
+
+                # 计算 Position（需要转换为屏幕坐标）
+                # 暂时假设使用当前 top_line，后面会调整
+                match_pos = Position(col, 0, line_num)
+                self.search_matches.append(match_pos)
+
+                start_pos = pos + 1
+
+        if not self.search_matches:
+            # 没有找到匹配，退出搜索模式
+            self.search_mode = None
+            self._redraw()
+            return
+
+        # 根据搜索方向和当前光标位置，找到第一个匹配
+        if self.search_mode == 'forward':
+            # 向前搜索：找到第一个在当前光标之后的匹配
+            for idx, match in enumerate(self.search_matches):
+                if match.line > self.point.line or \
+                   (match.line == self.point.line and match.x > self.point.x):
+                    self.current_match_index = idx
+                    break
+            else:
+                # 没有找到后面的，从头开始
+                self.current_match_index = 0
+        else:  # backward
+            # 向后搜索：找到最后一个在当前光标之前的匹配
+            for idx in range(len(self.search_matches) - 1, -1, -1):
+                match = self.search_matches[idx]
+                if match.line < self.point.line or \
+                   (match.line == self.point.line and match.x < self.point.x):
+                    self.current_match_index = idx
+                    break
+            else:
+                # 没有找到前面的，从尾开始
+                self.current_match_index = len(self.search_matches) - 1
+
+        # 退出搜索输入模式（在跳转之前）
+        self.search_mode = None
+
+        # 使用 Kitty marker 高亮所有匹配项
+        self._set_search_marker(self.search_query)
+
+        # 跳转到匹配位置（会调用 _redraw()）
+        self._jump_to_match(self.current_match_index)
+
+    def _jump_to_match(self, match_index: int) -> None:
+        """跳转到指定的匹配位置"""
+        if not self.search_matches or match_index < 0 or match_index >= len(self.search_matches):
+            return
+
+        match = self.search_matches[match_index]
+        abs_line = match.line  # 绝对行号（1-based）
+
+        # 计算新的屏幕坐标
+        # 尝试将匹配位置显示在屏幕中间
+        rows = self.screen_size.rows
+        target_y = rows // 2
+
+        # 计算 top_line 使得 abs_line 显示在屏幕中间
+        target_top_line = abs_line - target_y
+
+        # 边界检查
+        target_top_line = max(1, target_top_line)
+        target_top_line = min(len(self.lines) - rows + 1, target_top_line)
+
+        # 计算新的 y 坐标
+        new_y = abs_line - target_top_line
+
+        # 更新 point 位置
+        self.point = Position(match.x, new_y, target_top_line)
+
+        # 完全重绘屏幕
+        self._redraw()
+
+    def search_next(self) -> None:
+        """跳转到下一个匹配（vim n 命令）"""
+        if not self.search_matches:
+            return
+
+        # 循环到下一个匹配
+        self.current_match_index = (self.current_match_index + 1) % len(self.search_matches)
+        self._jump_to_match(self.current_match_index)
+
+    def search_prev(self) -> None:
+        """跳转到上一个匹配（vim N 命令）"""
+        if not self.search_matches:
+            return
+
+        # 循环到上一个匹配
+        self.current_match_index = (self.current_match_index - 1) % len(self.search_matches)
+        self._jump_to_match(self.current_match_index)
 
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()

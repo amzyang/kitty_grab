@@ -181,4 +181,12 @@ defaults.map = [
     (ParsedShortcut(mods=0, key_name='o'), KeyAction('toggle_selection_end', ('',))),  # noqa
     # toggle_selection_end
     (ParsedShortcut(mods=0, key_name='O'), KeyAction('toggle_selection_end', ('True',))),  # noqa
+    # search_start
+    (ParsedShortcut(mods=0, key_name='/'), KeyAction('search_start', ('forward',))),  # noqa
+    # search_start
+    (ParsedShortcut(mods=0, key_name='?'), KeyAction('search_start', ('backward',))),  # noqa
+    # search_next
+    (ParsedShortcut(mods=0, key_name='n'), KeyAction('search_next', ())),  # noqa
+    # search_prev
+    (ParsedShortcut(mods=0, key_name='N'), KeyAction('search_prev', ())),  # noqa
 ]
