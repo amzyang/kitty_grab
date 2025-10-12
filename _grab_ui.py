@@ -297,7 +297,7 @@ class StreamRegion(MarkedRegion):
         if StreamRegion.line_outside_region(current_line, start, end):
             return None, None
         return (start.x if current_line == start.line else 0,
-                end.x if current_line == end.line else maxx)
+                end.x + 1 if current_line == end.line else maxx)
 
     @staticmethod
     def lines_affected(mark: Optional[Position], old_point: Position,
@@ -319,7 +319,7 @@ class ColumnarRegion(MarkedRegion):
             maxx: ScreenColumn) -> SelectionInLine:
         if ColumnarRegion.line_outside_region(current_line, start, end):
             return None, None
-        return start.x, end.x
+        return start.x, end.x + 1
 
     @staticmethod
     def lines_affected(mark: Optional[Position], old_point: Position,
