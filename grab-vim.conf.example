@@ -50,6 +50,7 @@ map Ctrl+e scroll down
 #: Cursor stays in the same position relative to the screen.
 
 map v                 set_mode visual
+map V                 set_mode line
 map Ctrl+v            set_mode block
 map Ctrl+Left_Bracket set_mode normal
 map Escape            set_mode normal

@@ -172,6 +172,8 @@ defaults.map = [
     # set_mode
     (ParsedShortcut(mods=0, key_name='v'), KeyAction('set_mode', ('visual',))),  # noqa
     # set_mode
+    (ParsedShortcut(mods=0, key_name='V'), KeyAction('set_mode', ('line',))),  # noqa
+    # set_mode
     (ParsedShortcut(mods=4, key_name='v'), KeyAction('set_mode', ('block',))),  # noqa
     # set_mode
     (ParsedShortcut(mods=4, key_name='LeftBracket'), KeyAction('set_mode', ('normal',))),  # noqa

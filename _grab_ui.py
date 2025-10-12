@@ -341,6 +341,64 @@ class ColumnarRegion(MarkedRegion):
             return _span(old_point.line, point.line) - {point.line}
 
 
+class LineRegion(MarkedRegion):
+    """行级选择区域（类似 vim 的 linewise visual mode，V 键）
+
+    特性：
+    - 总是选择完整的行（从列 0 到行尾）
+    - 即使光标在行中间，也选择整行
+    - 起始行和结束行都包含完整内容
+
+    与 vim 的 linewise visual mode 对应：
+    - 按 V 进入此模式
+    - 选择区域总是整行高亮
+    - 复制时获得完整的行内容
+    """
+    name = 'line'
+
+    @staticmethod
+    def line_inside_region(current_line: AbsoluteLine,
+                           start: Position, end: Position) -> bool:
+        """判断 current_line 是否完全在选区内部
+
+        对于 LineRegion，与 StreamRegion 的行为相同
+        """
+        return start.line < current_line < end.line
+
+    @staticmethod
+    def selection_in_line(
+            current_line: AbsoluteLine, start: Position, end: Position,
+            maxx: ScreenColumn) -> SelectionInLine:
+        """返回 current_line 中被选中的列范围
+
+        LineRegion 的核心行为：总是返回完整行 (0, maxx)
+        这确保了无论光标在行的哪个位置，都选择整行
+
+        Args:
+            current_line: 当前行号（1-based 绝对行号）
+            start: 选区起始位置
+            end: 选区结束位置
+            maxx: 行的实际宽度（字符数，不是屏幕列数）
+
+        Returns:
+            (0, maxx): 选择整行
+            (None, None): 行不在选区内
+        """
+        if LineRegion.line_outside_region(current_line, start, end):
+            return None, None
+        return (0, maxx)
+
+    @staticmethod
+    def lines_affected(mark: Optional[Position], old_point: Position,
+                       point: Position) -> Set[AbsoluteLine]:
+        """返回需要重绘的行集合
+
+        LineRegion 的行为与 StreamRegion 相同：
+        point 移动时，所有经过的行都需要重绘
+        """
+        return _span(old_point.line, point.line)
+
+
 ActionName = str
 ActionArgs = tuple
 ShortcutMods = int
@@ -495,13 +553,15 @@ class GrabHandler(Handler):
     def quit(self, *args: Any) -> None:
         self.quit_loop(1)
 
-    region_types = {'stream': StreamRegion,
+    region_types = {'stream':   StreamRegion,
+                    'line':     LineRegion,
                     'columnar': ColumnarRegion
                    }  # type: Dict[RegionTypeStr, Type[Region]]
 
     mode_types = {'normal': NoRegion,
                   'visual': StreamRegion,
-                  'block': ColumnarRegion,
+                  'line':   LineRegion,
+                  'block':  ColumnarRegion,
                   }  # type: Dict[ModeTypeStr, Type[Region]]
 
     def _ensure_mark(self, mark_type: Type[Region] = StreamRegion) -> None:
