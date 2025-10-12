@@ -69,3 +69,8 @@ def select(func: Callable, args: str) -> Tuple[Callable, Tuple[str, str]]:
 @func_with_args("set_mode")
 def set_mode(func: Callable, mode: str) -> Tuple[Callable, str]:
     return func, parse_mode(mode)
+
+
+@func_with_args("toggle_selection_end")
+def toggle_selection_end(func: Callable, same_line: str = '') -> Tuple[Callable, Tuple[str,]]:
+    return func, (same_line,)

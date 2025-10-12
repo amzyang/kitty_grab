@@ -114,6 +114,16 @@ map('SetMode visual', 'set_mode v                   set_mode visual')
 map('SetMode block',  'set_mode Ctrl+v              set_mode block')
 map('SetMode normal', 'set_mode Ctrl+LeftBracket    set_mode normal', long_text=long_text)
 
+long_text = '''
+Toggle cursor to the other end of the selection (vim o command).'''
+map('Toggle selection end', 'toggle_selection_end o toggle_selection_end', long_text=long_text)
+
+long_text = '''
+Toggle cursor to the other corner in the same line (vim O command).
+In block mode, this moves to the other corner on the same line.
+In other modes, behaves like o.'''
+map('Toggle selection end same line', 'toggle_selection_end O toggle_selection_end True', long_text=long_text)
+
 egr()  # }}}
 
 agr('behavior', 'Behavior')  # {{{

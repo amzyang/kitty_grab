@@ -650,6 +650,40 @@ class GrabHandler(Handler):
         self.mode = mode
         self._select('noop', self.mode_types[mode])
 
+    def toggle_selection_end(self, same_line: str = '') -> None:
+        """切换光标到选区的另一端（类似 vim 的 o/O 命令）
+
+        Args:
+            same_line: 非空字符串表示 O 命令（block 模式下只在同一行切换），
+                      空字符串表示 o 命令（完全交换两个端点）
+        """
+        if self.mark is None:
+            return
+
+        old_point = self.point
+
+        # O 命令在 block 模式下只交换列（x 坐标），保持行不变
+        if same_line and self.mark_type == ColumnarRegion:
+            # 只交换 x 坐标，保持 y 和 top_line 不变
+            old_mark_x = self.mark.x
+            self.mark = self.mark._replace(x=old_point.x)
+            self.point = old_point._replace(x=old_mark_x)
+        else:
+            # o 命令或非 block 模式：完全交换 mark 和 point
+            self.mark, self.point = self.point, self.mark
+
+            # 确保新的 point 位置在屏幕可见范围内
+            self.point = self.point.scrolled_towards(
+                self.mark, self.screen_size.rows, len(self.lines))
+
+        # 如果滚动位置改变，需要完全重绘
+        if self.point.top_line != old_point.top_line:
+            self._redraw()
+        else:
+            # 否则只重绘受影响的行
+            self._redraw_lines(self.mark_type.lines_affected(
+                self.mark, old_point, self.point))
+
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()
         lines_list = [
