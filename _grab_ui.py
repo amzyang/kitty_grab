@@ -652,14 +652,18 @@ class GrabHandler(Handler):
 
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()
-        self.result = {'copy': '\n'.join(
-            line_slice
+        lines_list = [
+            line_slice.strip()
             for line in range(start.line, end.line + 1)
             for plain in [unstyled(self.lines[line - 1])]
             for start_x, end_x in [self.mark_type.selection_in_line(
                 line, start, end, len(plain))]
             if start_x is not None and end_x is not None
-            for line_slice, _half in [string_slice(plain, start_x, end_x)])}
+            for line_slice, _half in [string_slice(plain, start_x, end_x)]
+        ]
+        # 过滤掉空行并拼接
+        copied_text = '\n'.join(line for line in lines_list if line)
+        self.result = {'copy': copied_text}
         self.quit_loop(0)
 
 
