@@ -434,6 +434,7 @@ def load_config(*paths: str, overrides: Optional[Iterable[str]] = None) -> Optio
 def unstyled(s: str) -> str:
     s = re.sub(r'\x1b\[[0-9;:]*m', '', s)
     s = re.sub(r'\x1b\](?:[^\x07\x1b]+|\x1b[^\\])*(?:\x1b\\|\x07)', '', s)
+    s = s.expandtabs()
     return s
 
 
