@@ -752,7 +752,7 @@ class GrabHandler(Handler):
             for line in range(start.line, end.line + 1)
             for plain in [unstyled(self.lines[line - 1])]
             for start_x, end_x in [self.mark_type.selection_in_line(
-                line, start, end, len(plain))]
+                line, start, end, wcswidth(plain))]
             if start_x is not None and end_x is not None
             for line_slice, _half in [string_slice(plain, start_x, end_x)]
         ]
