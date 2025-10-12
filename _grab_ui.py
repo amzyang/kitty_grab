@@ -979,7 +979,7 @@ class GrabHandler(Handler):
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()
         lines_list = [
-            line_slice.strip()
+            line_slice.rstrip()
             for line in range(start.line, end.line + 1)
             for plain in [unstyled(self.lines[line - 1])]
             for start_x, end_x in [self.mark_type.selection_in_line(
@@ -987,8 +987,8 @@ class GrabHandler(Handler):
             if start_x is not None and end_x is not None
             for line_slice, _half in [string_slice(plain, start_x, end_x)]
         ]
-        # 过滤掉空行并拼接
-        copied_text = '\n'.join(line for line in lines_list if line)
+        # 保留中间空行，清理首尾空行
+        copied_text = '\n'.join(lines_list).strip()
         self.result = {'copy': copied_text}
         self.quit_loop(0)
 
