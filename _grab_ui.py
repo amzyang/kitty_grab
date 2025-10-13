@@ -797,11 +797,17 @@ class GrabHandler(Handler):
             line = unstyled(self.lines[self.point.line - 1])
             pos = truncate_point_for_length(line, self.point.x)
             if pos > 0:
-                pred = (self._is_word_char if self._is_word_char(line[pos - 1])
-                        else self._is_word_separator)
-                new_pos = pos - len(''.join(takewhile(pred, reversed(line[:pos]))))
-                return Position(wcswidth(line[:new_pos]),
-                                self.point.y, self.point.top_line)
+                # Step 1: 先往回跳过所有空白字符
+                while pos > 0 and line[pos - 1].isspace():
+                    pos -= 1
+
+                # Step 2: 如果还有字符，往回跳过整个单词/分隔符
+                if pos > 0:
+                    pred = (self._is_word_char if self._is_word_char(line[pos - 1])
+                            else self._is_word_separator)
+                    new_pos = pos - len(''.join(takewhile(pred, reversed(line[:pos]))))
+                    return Position(wcswidth(line[:new_pos]),
+                                    self.point.y, self.point.top_line)
         if self.point.y > 0:
             return Position(wcswidth(unstyled(self.lines[self.point.line - 2])),
                             self.point.y - 1, self.point.top_line)
