@@ -33,7 +33,7 @@ def parse_direction(direction: str) -> str:
                             'first', 'first nonwhite',
                             'last nonwhite', 'last',
                             'top', 'bottom',
-                            'word left', 'word right']
+                            'word left', 'word right', 'word end']
     return direction_lc.replace(' ', '_')
 
 

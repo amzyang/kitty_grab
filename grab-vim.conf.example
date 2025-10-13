@@ -46,6 +46,7 @@ map g           move top
 map G           move bottom
 map b           move word left
 map w           move word right
+map e           move word end
 
 #: Move the cursor around the screen.
 #: This will scroll the buffer if needed and possible.

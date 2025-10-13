@@ -152,6 +152,7 @@ Supported motion keys:
 - y0: yank to line start
 - yw: yank to next word
 - yb: yank to previous word
+- ye: yank to word end
 - yh/yl: yank character left/right
 - yj/yk: yank line down/up
 In visual/line/block mode, y copies selection and exits.'''

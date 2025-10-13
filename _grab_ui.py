@@ -645,6 +645,7 @@ class GrabHandler(Handler):
                 '0': 'first',            # y0: 复制到行首
                 'w': 'word_right',       # yw: 复制到下一个单词
                 'b': 'word_left',        # yb: 复制到上一个单词
+                'e': 'word_end',         # ye: 复制到单词末尾
                 'h': 'left',             # yh: 复制左边一个字符
                 'l': 'right',            # yl: 复制右边一个字符
                 'j': 'down',             # yj: 复制当前行和下一行
@@ -823,6 +824,67 @@ class GrabHandler(Handler):
         if self.point.top_line + self.point.y < len(self.lines):
             return Position(0, self.point.y, self.point.top_line + 1)
         return self.point
+
+    def word_end(self) -> Position:
+        """移动到当前/下一个单词的末尾（vim e 命令）
+
+        行为：
+        - 如果光标在单词中间或开始，移动到该单词末尾
+        - 如果光标在单词末尾或空白，移动到下一个单词的末尾
+        - 如果到达行尾，尝试跨行到下一行
+        """
+        line = unstyled(self.lines[self.point.line - 1])
+        pos = truncate_point_for_length(line, self.point.x)
+
+        # 如果已经到达行尾，尝试跨行
+        if pos >= len(line):
+            if self.point.y < self.screen_size.rows - 1:
+                next_line = unstyled(self.lines[self.point.line])
+                # 跳过前导空白
+                next_pos = 0
+                while next_pos < len(next_line) and next_line[next_pos].isspace():
+                    next_pos += 1
+                # 移动到第一个单词的末尾
+                if next_pos < len(next_line):
+                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
+                            else self._is_word_separator)
+                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
+                        next_pos += 1
+                    return Position(wcswidth(next_line[:next_pos]),
+                                  self.point.y + 1, self.point.top_line)
+            elif self.point.top_line + self.point.y < len(self.lines):
+                next_line = unstyled(self.lines[self.point.line])
+                next_pos = 0
+                while next_pos < len(next_line) and next_line[next_pos].isspace():
+                    next_pos += 1
+                if next_pos < len(next_line):
+                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
+                            else self._is_word_separator)
+                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
+                        next_pos += 1
+                    return Position(wcswidth(next_line[:next_pos]),
+                                  self.point.y, self.point.top_line + 1)
+            return self.point
+
+        # 向前移动一个字符（除非已经在行末）
+        if pos + 1 < len(line):
+            pos += 1
+
+        # 如果在空白处，跳过所有空白
+        while pos < len(line) and line[pos].isspace():
+            pos += 1
+
+        if pos >= len(line):
+            # 到达行尾
+            return Position(wcswidth(line), self.point.y, self.point.top_line)
+
+        # 现在应该在单词字符或分隔符上，移动到该单词的末尾
+        pred = (self._is_word_char if self._is_word_char(line[pos])
+                else self._is_word_separator)
+        while pos + 1 < len(line) and pred(line[pos + 1]):
+            pos += 1
+
+        return Position(wcswidth(line[:pos]), self.point.y, self.point.top_line)
 
     def _select(self, direction: DirectionStr,
                 mark_type: Type[Region]) -> None:
