@@ -149,6 +149,11 @@ Press y again to yank current line (yy).
 Future: will support motion keys like j/k/w/b/$/^/0.'''
 map('Start yank', 'start_yank y start_yank', long_text=long_text)
 
+long_text = '''
+Yank to end of line (Neovim Y command, equivalent to y$).
+Copies text from cursor position to end of current line.'''
+map('Yank to end of line', 'yank_to_eol Y yank_to_eol', long_text=long_text)
+
 egr()  # }}}
 
 agr('behavior', 'Behavior')  # {{{

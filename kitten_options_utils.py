@@ -95,3 +95,8 @@ def search_prev(func: Callable) -> Tuple[Callable, Tuple]:
 @func_with_args('start_yank')
 def start_yank(func: Callable) -> Tuple[Callable, Tuple]:
     return func, ()
+
+
+@func_with_args('yank_to_eol')
+def yank_to_eol(func: Callable) -> Tuple[Callable, Tuple]:
+    return func, ()

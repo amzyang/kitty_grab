@@ -28,6 +28,11 @@
 #:       In visual mode, y still works as confirm (copy and exit).
 #:       Uncomment the line above if you prefer the old behavior.
 
+# map Y           yank_to_eol
+
+#: Yank to end of line (Neovim Y command, equivalent to y$).
+#: Copies text from cursor position to end of current line.
+
 map h           move left
 map l           move right
 map k           move up

@@ -1045,6 +1045,31 @@ class GrabHandler(Handler):
         # 调用 confirm() 复制并退出
         self.confirm()
 
+    def yank_to_eol(self) -> None:
+        """复制从光标位置到行尾并退出（Neovim Y 命令，等同于 y$）
+
+        实现方式：
+        1. 设置 mark 为当前光标位置
+        2. 计算行尾位置（最后一个非空白字符）
+        3. 设置 point 为行尾位置
+        4. 使用 StreamRegion 来选择这段区域
+        5. 调用 confirm() 复制并退出
+        """
+        # 设置 mark 为当前光标位置
+        self.mark = self.point
+        self.mark_type = StreamRegion
+
+        # 计算行尾位置（复用 last_nonwhite() 的逻辑）
+        line = unstyled(self.lines[self.point.line - 1])
+        suffix = ''.join(takewhile(str.isspace, reversed(line)))
+        eol_x = wcswidth(line[:len(line) - len(suffix)])
+
+        # 设置 point 为行尾位置
+        self.point = Position(eol_x, self.point.y, self.point.top_line)
+
+        # 调用 confirm() 复制并退出
+        self.confirm()
+
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()
         lines_list = [
