@@ -817,6 +817,9 @@ class GrabHandler(Handler):
             pred = (self._is_word_char if self._is_word_char(line[pos])
                     else self._is_word_separator)
             new_pos = pos + len(''.join(takewhile(pred, line[pos:])))
+            # 跳过空白字符，移动到下一个单词的开始
+            while new_pos < len(line) and line[new_pos].isspace():
+                new_pos += 1
             return Position(wcswidth(line[:new_pos]),
                             self.point.y, self.point.top_line)
         if self.point.y < self.screen_size.rows - 1:
