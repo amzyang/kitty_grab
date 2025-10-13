@@ -792,6 +792,36 @@ class GrabHandler(Handler):
         return (unicodedata.category(c)[0] not in 'LN'
                 and c not in self._select_by_word_characters)
 
+    def _find_next_word_end_from_line(self, start_line_idx: int) -> Optional[Tuple[int, int]]:
+        """从指定行开始，查找下一个单词的末尾位置
+
+        跳过空行和只有空白的行，找到第一个有单词的行。
+
+        Args:
+            start_line_idx: 开始查找的行索引（0-based，用于 self.lines）
+
+        Returns:
+            (line_idx, col_pos): 行索引（0-based）和列位置（字符串索引）
+            如果没有找到返回 None
+        """
+        for line_idx in range(start_line_idx, len(self.lines)):
+            line = unstyled(self.lines[line_idx])
+            # 跳过前导空白
+            pos = 0
+            while pos < len(line) and line[pos].isspace():
+                pos += 1
+
+            # 如果这行有单词
+            if pos < len(line):
+                # 移动到第一个单词的末尾
+                pred = (self._is_word_char if self._is_word_char(line[pos])
+                        else self._is_word_separator)
+                while pos + 1 < len(line) and pred(line[pos + 1]):
+                    pos += 1
+                return (line_idx, pos)
+
+        return None
+
     def word_left(self) -> Position:
         if self.point.x > 0:
             line = unstyled(self.lines[self.point.line - 1])
@@ -847,32 +877,33 @@ class GrabHandler(Handler):
 
         # 如果已经到达行尾，尝试跨行
         if pos >= len(line):
-            if self.point.y < self.screen_size.rows - 1:
-                next_line = unstyled(self.lines[self.point.line])
-                # 跳过前导空白
-                next_pos = 0
-                while next_pos < len(next_line) and next_line[next_pos].isspace():
-                    next_pos += 1
-                # 移动到第一个单词的末尾
-                if next_pos < len(next_line):
-                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
-                            else self._is_word_separator)
-                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
-                        next_pos += 1
-                    return Position(wcswidth(next_line[:next_pos]),
-                                  self.point.y + 1, self.point.top_line)
-            elif self.point.top_line + self.point.y < len(self.lines):
-                next_line = unstyled(self.lines[self.point.line])
-                next_pos = 0
-                while next_pos < len(next_line) and next_line[next_pos].isspace():
-                    next_pos += 1
-                if next_pos < len(next_line):
-                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
-                            else self._is_word_separator)
-                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
-                        next_pos += 1
-                    return Position(wcswidth(next_line[:next_pos]),
-                                  self.point.y, self.point.top_line + 1)
+            # 使用辅助方法查找下一个有单词的行
+            result = self._find_next_word_end_from_line(self.point.line)  # 从下一行开始（0-based index）
+
+            if result is not None:
+                target_line_idx, target_pos = result
+                target_abs_line = target_line_idx + 1  # 转为 1-based
+                line_offset = target_abs_line - self.point.line
+
+                # 计算新的 y 和 top_line
+                new_y = self.point.y + line_offset
+                new_top_line = self.point.top_line
+
+                # 如果新的 y 超出屏幕底部，需要滚动
+                while new_y >= self.screen_size.rows:
+                    new_y -= 1
+                    new_top_line += 1
+
+                # 确保 top_line 不超过最大值
+                max_top_line = max(1, len(self.lines) - self.screen_size.rows + 1)
+                if new_top_line > max_top_line:
+                    new_top_line = max_top_line
+                    new_y = target_abs_line - new_top_line
+
+                target_line = unstyled(self.lines[target_line_idx])
+                return Position(wcswidth(target_line[:target_pos]), new_y, new_top_line)
+
+            # 没有找到，返回当前位置
             return self.point
 
         # 向前移动一个字符（除非已经在行末）
@@ -885,33 +916,33 @@ class GrabHandler(Handler):
 
         if pos >= len(line):
             # 到达行尾，尝试跨行到下一行
-            if self.point.y < self.screen_size.rows - 1:
-                next_line = unstyled(self.lines[self.point.line])
-                # 跳过前导空白
-                next_pos = 0
-                while next_pos < len(next_line) and next_line[next_pos].isspace():
-                    next_pos += 1
-                # 移动到第一个单词的末尾
-                if next_pos < len(next_line):
-                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
-                            else self._is_word_separator)
-                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
-                        next_pos += 1
-                    return Position(wcswidth(next_line[:next_pos]),
-                                  self.point.y + 1, self.point.top_line)
-            elif self.point.top_line + self.point.y < len(self.lines):
-                next_line = unstyled(self.lines[self.point.line])
-                next_pos = 0
-                while next_pos < len(next_line) and next_line[next_pos].isspace():
-                    next_pos += 1
-                if next_pos < len(next_line):
-                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
-                            else self._is_word_separator)
-                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
-                        next_pos += 1
-                    return Position(wcswidth(next_line[:next_pos]),
-                                  self.point.y, self.point.top_line + 1)
-            # 没有下一行或下一行为空，返回当前行末尾
+            # 使用辅助方法查找下一个有单词的行
+            result = self._find_next_word_end_from_line(self.point.line)  # 从下一行开始（0-based index）
+
+            if result is not None:
+                target_line_idx, target_pos = result
+                target_abs_line = target_line_idx + 1  # 转为 1-based
+                line_offset = target_abs_line - self.point.line
+
+                # 计算新的 y 和 top_line
+                new_y = self.point.y + line_offset
+                new_top_line = self.point.top_line
+
+                # 如果新的 y 超出屏幕底部，需要滚动
+                while new_y >= self.screen_size.rows:
+                    new_y -= 1
+                    new_top_line += 1
+
+                # 确保 top_line 不超过最大值
+                max_top_line = max(1, len(self.lines) - self.screen_size.rows + 1)
+                if new_top_line > max_top_line:
+                    new_top_line = max_top_line
+                    new_y = target_abs_line - new_top_line
+
+                target_line = unstyled(self.lines[target_line_idx])
+                return Position(wcswidth(target_line[:target_pos]), new_y, new_top_line)
+
+            # 没有找到，返回当前行末尾
             return Position(wcswidth(line), self.point.y, self.point.top_line)
 
         # 现在应该在单词字符或分隔符上，移动到该单词的末尾
