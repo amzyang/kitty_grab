@@ -145,8 +145,16 @@ map('Search prev', 'search_prev N search_prev', long_text=long_text)
 
 long_text = '''
 Start yank operator (vim y command).
-Press y again to yank current line (yy).
-Future: will support motion keys like j/k/w/b/$/^/0.'''
+Supported motion keys:
+- yy: yank current line
+- y$: yank to end of line
+- y^: yank to first non-whitespace character
+- y0: yank to line start
+- yw: yank to next word
+- yb: yank to previous word
+- yh/yl: yank character left/right
+- yj/yk: yank line down/up
+In visual/line/block mode, y copies selection and exits.'''
 map('Start yank', 'start_yank y start_yank', long_text=long_text)
 
 long_text = '''

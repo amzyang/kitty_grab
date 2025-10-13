@@ -633,12 +633,31 @@ class GrabHandler(Handler):
 
         # 当前只支持 yank operator
         if self.pending_operator == 'y':
-            # y + y = yank current line
+            # y + y = yank current line (特殊处理，使用 LineRegion)
             if key == 'y':
                 self.yank_line()
                 return
-            # TODO: 将来可以在这里添加其他 motion
-            # 例如：j/k (yj/yk), w/b (yw/yb), $/^/0 (y$/y^/y0) 等
+
+            # motion 键到方法名的映射表
+            motion_map = {
+                '$': 'last_nonwhite',    # y$: 复制到行尾
+                '^': 'first_nonwhite',   # y^: 复制到第一个非空白字符
+                '0': 'first',            # y0: 复制到行首
+                'w': 'word_right',       # yw: 复制到下一个单词
+                'b': 'word_left',        # yb: 复制到上一个单词
+                'h': 'left',             # yh: 复制左边一个字符
+                'l': 'right',            # yl: 复制右边一个字符
+                'j': 'down',             # yj: 复制当前行和下一行
+                'k': 'up',               # yk: 复制当前行和上一行
+            }
+
+            # 查找对应的 motion 方法
+            if key in motion_map:
+                motion_method_name = motion_map[key]
+                motion_method = getattr(self, motion_method_name)
+                target_position = motion_method()
+                self._execute_yank_motion(target_position)
+                return
 
         # 其他按键：取消 pending operator（不识别的 motion）
         self.pending_operator = None
@@ -1024,6 +1043,32 @@ class GrabHandler(Handler):
             # visual/line/block 模式：直接复制并退出
             self.confirm()
 
+    def _execute_yank_motion(self, target_position: Position) -> None:
+        """通用的 yank 执行方法（operator + motion 模式）
+
+        实现方式：
+        1. 保存当前位置作为 mark
+        2. 设置 mark_type 为 StreamRegion
+        3. 更新 point 到目标位置
+        4. 清除 pending_operator 状态
+        5. 调用 confirm() 复制并退出
+
+        Args:
+            target_position: motion 方法返回的目标位置
+        """
+        # 保存当前位置作为 mark
+        self.mark = self.point
+        self.mark_type = StreamRegion
+
+        # 更新 point 到目标位置
+        self.point = target_position
+
+        # 清除 pending operator 状态
+        self.pending_operator = None
+
+        # 复制并退出
+        self.confirm()
+
     def yank_line(self) -> None:
         """复制当前行并退出（vim yy 命令）
 
@@ -1048,27 +1093,9 @@ class GrabHandler(Handler):
     def yank_to_eol(self) -> None:
         """复制从光标位置到行尾并退出（Neovim Y 命令，等同于 y$）
 
-        实现方式：
-        1. 设置 mark 为当前光标位置
-        2. 计算行尾位置（最后一个非空白字符）
-        3. 设置 point 为行尾位置
-        4. 使用 StreamRegion 来选择这段区域
-        5. 调用 confirm() 复制并退出
+        使用通用的 _execute_yank_motion() 方法，复用 y$ 的实现
         """
-        # 设置 mark 为当前光标位置
-        self.mark = self.point
-        self.mark_type = StreamRegion
-
-        # 计算行尾位置（复用 last_nonwhite() 的逻辑）
-        line = unstyled(self.lines[self.point.line - 1])
-        suffix = ''.join(takewhile(str.isspace, reversed(line)))
-        eol_x = wcswidth(line[:len(line) - len(suffix)])
-
-        # 设置 point 为行尾位置
-        self.point = Position(eol_x, self.point.y, self.point.top_line)
-
-        # 调用 confirm() 复制并退出
-        self.confirm()
+        self._execute_yank_motion(self.last_nonwhite())
 
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()
