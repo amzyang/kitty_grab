@@ -465,6 +465,11 @@ class GrabHandler(Handler):
         self.mode = 'normal'       # type: ModeTypeStr
         self.result = None         # type: Optional[ResultDict]
 
+        # operator-pending 状态：等待 motion 输入
+        # None 表示无 pending operator
+        # 'y' 表示等待 motion 来执行 yank 操作
+        self.pending_operator = None  # type: Optional[str]
+
         # Operating System Command (OSC); command number 52
         # c — clipboard
         # p — primary
@@ -613,10 +618,40 @@ class GrabHandler(Handler):
                 self.search_query += key_event.text
                 self._redraw()
 
+    def _handle_pending_operator(self, key_event: KeyEvent) -> None:
+        """处理 operator-pending 模式下的键盘事件"""
+        if key_event.type not in [kk.PRESS, kk.REPEAT]:
+            return
+
+        key = key_event.key
+        mods = key_event.mods
+
+        # Escape 键：取消 pending operator
+        if key == 'ESCAPE':
+            self.pending_operator = None
+            return
+
+        # 当前只支持 yank operator
+        if self.pending_operator == 'y':
+            # y + y = yank current line
+            if key == 'y':
+                self.yank_line()
+                return
+            # TODO: 将来可以在这里添加其他 motion
+            # 例如：j/k (yj/yk), w/b (yw/yb), $/^/0 (y$/y^/y0) 等
+
+        # 其他按键：取消 pending operator（不识别的 motion）
+        self.pending_operator = None
+
     def on_key_event(self, key_event: KeyEvent, in_bracketed_paste: bool = False) -> None:
         # 如果处于搜索输入模式，特殊处理键盘事件
         if self.search_mode is not None:
             self._handle_search_input(key_event)
+            return
+
+        # 如果处于 operator-pending 模式，特殊处理键盘事件
+        if self.pending_operator is not None:
+            self._handle_pending_operator(key_event)
             return
 
         action = self.shortcut_action(key_event)
@@ -975,6 +1010,40 @@ class GrabHandler(Handler):
         # 循环到上一个匹配
         self.current_match_index = (self.current_match_index - 1) % len(self.search_matches)
         self._jump_to_match(self.current_match_index)
+
+    def start_yank(self) -> None:
+        """进入 operator-pending 状态，等待 motion 输入（vim y 命令）
+
+        在 normal 模式下：设置 pending_operator 等待 motion
+        在 visual/line/block 模式下：复制选中内容并退出（等同于 confirm）
+        """
+        if self.mode == 'normal':
+            # normal 模式：进入 operator-pending 状态
+            self.pending_operator = 'y'
+        else:
+            # visual/line/block 模式：直接复制并退出
+            self.confirm()
+
+    def yank_line(self) -> None:
+        """复制当前行并退出（vim yy 命令）
+
+        实现方式：
+        1. 临时设置 mark 和 mark_type 为 LineRegion
+        2. 调用 confirm() 复制并退出
+        """
+        # 保存当前状态
+        old_mark = self.mark
+        old_mark_type = self.mark_type
+
+        # 设置 mark 为当前行的开始位置（LineRegion 会自动选择整行）
+        self.mark = Position(0, self.point.y, self.point.top_line)
+        self.mark_type = LineRegion
+
+        # 清除 pending operator 状态
+        self.pending_operator = None
+
+        # 调用 confirm() 复制并退出
+        self.confirm()
 
     def confirm(self, *args: Any) -> None:
         start, end = self._start_end()

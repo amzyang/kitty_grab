@@ -90,3 +90,8 @@ def search_next(func: Callable) -> Tuple[Callable, Tuple]:
 @func_with_args('search_prev')
 def search_prev(func: Callable) -> Tuple[Callable, Tuple]:
     return func, ()
+
+
+@func_with_args('start_yank')
+def start_yank(func: Callable) -> Tuple[Callable, Tuple]:
+    return func, ()

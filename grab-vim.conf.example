@@ -20,9 +20,13 @@
 #: Exit the grabber without copying anything.
 
 # map Enter confirm
-map y confirm
+# map y confirm
 
 #: Copy the selected region to clipboard and exit.
+#: NOTE: y is now bound to start_yank by default (vim-like operator).
+#:       Press yy to yank current line in normal mode.
+#:       In visual mode, y still works as confirm (copy and exit).
+#:       Uncomment the line above if you prefer the old behavior.
 
 map h           move left
 map l           move right

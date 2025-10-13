@@ -189,4 +189,6 @@ defaults.map = [
     (ParsedShortcut(mods=0, key_name='n'), KeyAction('search_next', ())),  # noqa
     # search_prev
     (ParsedShortcut(mods=0, key_name='N'), KeyAction('search_prev', ())),  # noqa
+    # start_yank
+    (ParsedShortcut(mods=0, key_name='y'), KeyAction('start_yank', ())),  # noqa
 ]

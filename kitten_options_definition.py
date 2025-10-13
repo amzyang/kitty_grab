@@ -143,6 +143,12 @@ long_text = '''
 Jump to previous search match (vim N command).'''
 map('Search prev', 'search_prev N search_prev', long_text=long_text)
 
+long_text = '''
+Start yank operator (vim y command).
+Press y again to yank current line (yy).
+Future: will support motion keys like j/k/w/b/$/^/0.'''
+map('Start yank', 'start_yank y start_yank', long_text=long_text)
+
 egr()  # }}}
 
 agr('behavior', 'Behavior')  # {{{
