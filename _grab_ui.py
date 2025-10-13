@@ -906,16 +906,46 @@ class GrabHandler(Handler):
             # 没有找到，返回当前位置
             return self.point
 
-        # 向前移动一个字符（除非已经在行末）
-        if pos + 1 < len(line):
-            pos += 1
+        # 向前移动一个字符
+        pos += 1
+
+        # 如果超出行尾，尝试跨行
+        if pos >= len(line):
+            # 使用辅助方法查找下一个有单词的行
+            result = self._find_next_word_end_from_line(self.point.line)  # 从下一行开始（0-based index）
+
+            if result is not None:
+                target_line_idx, target_pos = result
+                target_abs_line = target_line_idx + 1  # 转为 1-based
+                line_offset = target_abs_line - self.point.line
+
+                # 计算新的 y 和 top_line
+                new_y = self.point.y + line_offset
+                new_top_line = self.point.top_line
+
+                # 如果新的 y 超出屏幕底部，需要滚动
+                while new_y >= self.screen_size.rows:
+                    new_y -= 1
+                    new_top_line += 1
+
+                # 确保 top_line 不超过最大值
+                max_top_line = max(1, len(self.lines) - self.screen_size.rows + 1)
+                if new_top_line > max_top_line:
+                    new_top_line = max_top_line
+                    new_y = target_abs_line - new_top_line
+
+                target_line = unstyled(self.lines[target_line_idx])
+                return Position(wcswidth(target_line[:target_pos]), new_y, new_top_line)
+
+            # 没有找到，返回当前位置
+            return self.point
 
         # 如果在空白处，跳过所有空白
         while pos < len(line) and line[pos].isspace():
             pos += 1
 
+        # 如果跳过空白后到达行尾，尝试跨行
         if pos >= len(line):
-            # 到达行尾，尝试跨行到下一行
             # 使用辅助方法查找下一个有单词的行
             result = self._find_next_word_end_from_line(self.point.line)  # 从下一行开始（0-based index）
 
