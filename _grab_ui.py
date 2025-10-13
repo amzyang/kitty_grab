@@ -878,7 +878,34 @@ class GrabHandler(Handler):
             pos += 1
 
         if pos >= len(line):
-            # 到达行尾
+            # 到达行尾，尝试跨行到下一行
+            if self.point.y < self.screen_size.rows - 1:
+                next_line = unstyled(self.lines[self.point.line])
+                # 跳过前导空白
+                next_pos = 0
+                while next_pos < len(next_line) and next_line[next_pos].isspace():
+                    next_pos += 1
+                # 移动到第一个单词的末尾
+                if next_pos < len(next_line):
+                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
+                            else self._is_word_separator)
+                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
+                        next_pos += 1
+                    return Position(wcswidth(next_line[:next_pos]),
+                                  self.point.y + 1, self.point.top_line)
+            elif self.point.top_line + self.point.y < len(self.lines):
+                next_line = unstyled(self.lines[self.point.line])
+                next_pos = 0
+                while next_pos < len(next_line) and next_line[next_pos].isspace():
+                    next_pos += 1
+                if next_pos < len(next_line):
+                    pred = (self._is_word_char if self._is_word_char(next_line[next_pos])
+                            else self._is_word_separator)
+                    while next_pos + 1 < len(next_line) and pred(next_line[next_pos + 1]):
+                        next_pos += 1
+                    return Position(wcswidth(next_line[:next_pos]),
+                                  self.point.y, self.point.top_line + 1)
+            # 没有下一行或下一行为空，返回当前行末尾
             return Position(wcswidth(line), self.point.y, self.point.top_line)
 
         # 现在应该在单词字符或分隔符上，移动到该单词的末尾
