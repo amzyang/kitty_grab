@@ -12,6 +12,10 @@ except ModuleNotFoundError:
 
 import _grab_ui
 
+# 预编译正则表达式（性能优化）
+_SGR_CR_PATTERN = re.compile(r'\x1b\[[0-9;]*m\r')
+_LONE_CR_PATTERN = re.compile(r'\r(?!\n)')
+
 
 def main(args: List[str]) -> None:
     pass
@@ -34,14 +38,11 @@ def handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, 
     # 1. 有 SGR 重置: 行内容 + \x1b[m + \r (当 ansibuf->len > 0)
     # 2. 无 SGR 重置: 行内容 + \r (当 ansibuf->len == 0，空行或只有空格)
 
-    # 步骤1: 转换带 SGR 重置的 wrap marker
-    content = re.sub(r'\x1b\[[0-9;]*m\r\n', '\x1b[=65h\n', content)
-    content = re.sub(r'\x1b\[[0-9;]*m\r(?!\n)', '\x1b[=65h\n', content)
+    # 步骤1: 转换带 SGR 重置的 wrap marker（合并了 \r\n 和 \r 两种情况）
+    content = _SGR_CR_PATTERN.sub('\x1b[=65h', content)
 
     # 步骤2: 转换不带 SGR 重置的 wrap marker（单独的 \r，但不是 \r\n 的一部分）
-    # 这种情况下，\r 后面可能直接跟着下一行内容（wrapped line）
-    # 注意：这里假设普通的行结束都是 \n 或 \r\n，所以单独的 \r 后跟非 \n 字符表示 wrap
-    content = re.sub(r'\r(?!\n)', '\x1b[=65h\n', content)
+    content = _LONE_CR_PATTERN.sub('\x1b[=65h\n', content)
 
     # 步骤3: 清理剩余的 \r\n 和 \r
     content = content.replace('\r\n', '\n').replace('\r', '\n')

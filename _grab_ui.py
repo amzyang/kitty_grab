@@ -500,6 +500,40 @@ class GrabHandler(Handler):
         for spec, action in self.opts.map:
             self.add_shortcut(action, spec)
 
+        # 预处理所有行并缓存（性能优化）
+        self._unstyled_cache = {}  # type: Dict[AbsoluteLine, str]
+        self._width_cache = {}     # type: Dict[AbsoluteLine, int]
+        self._has_wrap = {}        # type: Dict[AbsoluteLine, bool]
+
+        # 第一阶段：预处理所有行
+        for i, line in enumerate(lines):
+            line_num = i + 1  # type: AbsoluteLine
+            plain = unstyled(line)
+            self._unstyled_cache[line_num] = plain
+            self._width_cache[line_num] = wcswidth(plain)
+            self._has_wrap[line_num] = WRAP_MARKER in line
+
+        # 第二阶段：构建逻辑行边界索引（性能优化）
+        self._logical_line_map = {}  # type: Dict[AbsoluteLine, Tuple[AbsoluteLine, AbsoluteLine]]
+
+        current_start = 1
+        for line_num in range(1, len(lines) + 1):
+            # 检查上一行是否有 wrap marker
+            if line_num > 1 and self._has_wrap[line_num - 1]:
+                # 当前行是延续，不更新 current_start
+                pass
+            else:
+                # 当前行是新逻辑行的开始
+                current_start = line_num
+
+            # 查找逻辑行的末尾
+            end_line = line_num
+            while end_line < len(lines) and self._has_wrap[end_line]:
+                end_line += 1
+
+            # 存储边界信息
+            self._logical_line_map[line_num] = (current_start, end_line)
+
     def _start_end(self) -> Tuple[Position, Position]:
         start, end = sorted([self.point, self.mark or self.point])
         return self.mark_type.adjust(start, end)
@@ -510,7 +544,7 @@ class GrabHandler(Handler):
         clear_eol = '\x1b[m\x1b[K'
         sgr0 = '\x1b[m'
 
-        plain = unstyled(line)
+        plain = self._unstyled_cache[current_line]
         selection_sgr = '\x1b[38{};48{}m'.format(
             color_as_sgr(self.opts.selection_foreground),
             color_as_sgr(self.opts.selection_background))
@@ -540,7 +574,7 @@ class GrabHandler(Handler):
             return
 
         start_x, end_x = self.mark_type.selection_in_line(
-            current_line, display_start, display_end, wcswidth(plain))
+            current_line, display_start, display_end, self._width_cache[current_line])
         if start_x is None or end_x is None:
             return
 
@@ -801,7 +835,7 @@ class GrabHandler(Handler):
         # 在行首，检查上一行是否有 wrap marker
         if self.point.line > 1 and self._has_wrap_marker(self.point.line - 1):
             # 上一行有 wrap marker，当前行是延续，跳到上一行末尾
-            prev_line = unstyled(self.lines[self.point.line - 2])
+            prev_line = self._unstyled_cache[self.point.line - 1]
             return self._absolute_line_to_position(self.point.line - 1, x=wcswidth(prev_line))
 
         # 无 wrap 或已在第一行，停在当前位置
@@ -813,7 +847,7 @@ class GrabHandler(Handler):
         如果到达行尾且当前行有 wrap marker，跳到下一个视觉行的开始（逻辑行延续）
         """
         # 获取当前行的实际内容
-        line = unstyled(self.lines[self.point.line - 1])
+        line = self._unstyled_cache[self.point.line]
         # 将显示列位置转换为字符串索引
         pos = truncate_point_for_length(line, self.point.x)
 
@@ -861,14 +895,14 @@ class GrabHandler(Handler):
     def first_nonwhite(self) -> Position:
         """跳到逻辑行的第一个非空白字符（vim ^ 命令）"""
         start_line = self._find_logical_line_start(self.point.line)
-        line = unstyled(self.lines[start_line - 1])
+        line = self._unstyled_cache[start_line]
         prefix = ''.join(takewhile(str.isspace, line))
         return self._absolute_line_to_position(start_line, x=wcswidth(prefix))
 
     def last_nonwhite(self) -> Position:
         """返回当前逻辑行最后一个非空白字符的位置"""
         end_line = self._find_logical_line_end(self.point.line)
-        line = unstyled(self.lines[end_line - 1])
+        line = self._unstyled_cache[end_line]
         suffix = ''.join(takewhile(str.isspace, reversed(line)))
         x = wcswidth(line[:len(line) - len(suffix)])
         return self._absolute_line_to_position(end_line, x=x)
@@ -876,14 +910,14 @@ class GrabHandler(Handler):
     def last(self) -> Position:
         """跳到逻辑行的末尾（vim $ 命令）"""
         end_line = self._find_logical_line_end(self.point.line)
-        line = unstyled(self.lines[end_line - 1])
+        line = self._unstyled_cache[end_line]
         return self._absolute_line_to_position(end_line, x=wcswidth(line))
 
     def top(self) -> Position:
         return Position(0, 0, 1)
 
     def bottom(self) -> Position:
-        x = wcswidth(unstyled(self.lines[-1]))
+        x = wcswidth(self._unstyled_cache[len(self.lines)])
         y = min(len(self.lines) - self.point.top_line,
                 self.screen_size.rows - 1)
         return Position(x, y, len(self.lines) - y)
@@ -908,7 +942,7 @@ class GrabHandler(Handler):
     # Line-wrapping 辅助方法
 
     def _has_wrap_marker(self, line_num: int) -> bool:
-        """检查指定行是否有 wrap marker
+        """检查指定行是否有 wrap marker（优化版：使用预构建缓存）
 
         Args:
             line_num: 行号（1-based）
@@ -916,13 +950,10 @@ class GrabHandler(Handler):
         Returns:
             是否有 wrap marker
         """
-        if 1 <= line_num <= len(self.lines):
-            line = self.lines[line_num - 1]
-            return WRAP_MARKER in line
-        return False
+        return self._has_wrap.get(line_num, False)
 
     def _find_logical_line_start(self, from_line: int) -> int:
-        """向上追溯找到逻辑行的起始行号
+        """向上追溯找到逻辑行的起始行号（优化版：使用预构建索引）
 
         Args:
             from_line: 开始查找的行号（1-based）
@@ -930,15 +961,13 @@ class GrabHandler(Handler):
         Returns:
             逻辑行的起始行号（1-based）
         """
-        start_line = from_line
-
-        while start_line > 1 and self._has_wrap_marker(start_line - 1):
-            start_line -= 1
-
-        return start_line
+        if from_line in self._logical_line_map:
+            return self._logical_line_map[from_line][0]
+        # 边界情况（理论上不应该发生）
+        return from_line
 
     def _find_logical_line_end(self, from_line: int) -> int:
-        """向下追溯找到逻辑行的末尾行号
+        """向下追溯找到逻辑行的末尾行号（优化版：使用预构建索引）
 
         Args:
             from_line: 开始查找的行号（1-based）
@@ -946,12 +975,10 @@ class GrabHandler(Handler):
         Returns:
             逻辑行的末尾行号（1-based）
         """
-        end_line = from_line
-
-        while end_line < len(self.lines) and self._has_wrap_marker(end_line):
-            end_line += 1
-
-        return end_line
+        if from_line in self._logical_line_map:
+            return self._logical_line_map[from_line][1]
+        # 边界情况（理论上不应该发生）
+        return from_line
 
     def _absolute_line_to_position(self, target_line: int, x: int = 0) -> Position:
         """将绝对行号转换为 Position（处理滚动和边界）
@@ -1002,8 +1029,8 @@ class GrabHandler(Handler):
         if line_num >= len(self.lines):
             return False
 
-        current_line = unstyled(self.lines[line_num - 1])
-        next_line = unstyled(self.lines[line_num])
+        current_line = self._unstyled_cache[line_num]
+        next_line = self._unstyled_cache[line_num + 1]
 
         # 处理行尾留白（宽字符导致）：去除行尾空白后检查
         current_line_stripped = current_line.rstrip()
@@ -1031,7 +1058,7 @@ class GrabHandler(Handler):
             target_line_num -= 1
 
         # 在目标行中往回找单词开头
-        target_line = unstyled(self.lines[target_line_num - 1])
+        target_line = self._unstyled_cache[target_line_num]
         # 从去除行尾空白后的位置开始，避免宽字符导致的留白
         pos = len(target_line.rstrip())
         while pos > 0 and self._is_word_char(target_line[pos - 1]):
@@ -1052,7 +1079,7 @@ class GrabHandler(Handler):
             如果没有找到返回 None
         """
         for line_idx in range(start_line_idx, len(self.lines)):
-            line = unstyled(self.lines[line_idx])
+            line = self._unstyled_cache[line_idx + 1]
             # 跳过前导空白
             pos = 0
             while pos < len(line) and line[pos].isspace():
@@ -1074,7 +1101,7 @@ class GrabHandler(Handler):
 
         支持跨越 wrap 的逻辑行延续和单词分割
         """
-        line = unstyled(self.lines[self.point.line - 1])
+        line = self._unstyled_cache[self.point.line]
         pos = truncate_point_for_length(line, self.point.x)
 
         # 检查是否在行首且可能处于被分割单词的后半部分
@@ -1094,7 +1121,7 @@ class GrabHandler(Handler):
                 if new_pos == 0 and self._is_word_split_at_wrap(self.point.line - 1):
                     # 向上追溯找到单词真正的开始
                     target_line, target_pos = self._find_word_start_across_wraps(self.point.line - 1)
-                    target_line_content = unstyled(self.lines[target_line - 1])
+                    target_line_content = self._unstyled_cache[target_line]
                     return self._absolute_line_to_position(target_line, x=wcswidth(target_line_content[:target_pos]))
 
                 # 不是单词分割，正常返回
@@ -1105,13 +1132,13 @@ class GrabHandler(Handler):
             return self.point
 
         prev_line_raw = self.lines[self.point.line - 2]
-        prev_line = unstyled(prev_line_raw)
+        prev_line = self._unstyled_cache[self.point.line - 1]
 
         # 检查是否是单词分割（当前行首的单词延续）
         if self._is_word_split_at_wrap(self.point.line - 1):
             # 向上追溯找到单词真正的开始
             target_line, target_pos = self._find_word_start_across_wraps(self.point.line - 1)
-            target_line_content = unstyled(self.lines[target_line - 1])
+            target_line_content = self._unstyled_cache[target_line]
             return self._absolute_line_to_position(target_line, x=wcswidth(target_line_content[:target_pos]))
 
         # 不是单词分割，正常跳到上一行的单词
@@ -1134,7 +1161,7 @@ class GrabHandler(Handler):
 
         支持跨越 wrap 的逻辑行延续和单词分割
         """
-        line = unstyled(self.lines[self.point.line - 1])
+        line = self._unstyled_cache[self.point.line]
         pos = truncate_point_for_length(line, self.point.x)
 
         if pos < len(line):
@@ -1155,7 +1182,7 @@ class GrabHandler(Handler):
 
         # 跳到下一个视觉行
         next_line_num = self.point.line + 1
-        next_line = unstyled(self.lines[next_line_num - 1])
+        next_line = self._unstyled_cache[next_line_num]
 
         # 如果有 wrap marker，检查是否是单词分割
         if self._has_wrap_marker(self.point.line):
@@ -1183,7 +1210,7 @@ class GrabHandler(Handler):
         - 如果到达行尾，尝试跨行到下一行
         - 支持跨越 wrap 的逻辑行延续和单词分割
         """
-        line = unstyled(self.lines[self.point.line - 1])
+        line = self._unstyled_cache[self.point.line]
         pos = truncate_point_for_length(line, self.point.x)
 
         # 辅助函数：处理跨行到下一行查找单词末尾
@@ -1193,7 +1220,7 @@ class GrabHandler(Handler):
                 return None
 
             next_line_num = self.point.line + 1
-            next_line = unstyled(self.lines[next_line_num - 1])
+            next_line = self._unstyled_cache[next_line_num]
 
             if self._has_wrap_marker(self.point.line):
                 new_pos = 0
@@ -1224,7 +1251,7 @@ class GrabHandler(Handler):
             result = self._find_next_word_end_from_line(self.point.line)
             if result is not None:
                 target_line_idx, target_pos = result
-                target_line = unstyled(self.lines[target_line_idx])
+                target_line = self._unstyled_cache[target_line_idx + 1]
                 return self._absolute_line_to_position(target_line_idx + 1, x=wcswidth(target_line[:target_pos+1]))
 
             return None
@@ -1281,7 +1308,7 @@ class GrabHandler(Handler):
             current_abs_line += 1
 
             # 获取下一行内容
-            line = unstyled(self.lines[current_abs_line - 1])
+            line = self._unstyled_cache[current_abs_line]
 
             # 检查下一行开头是否是同类字符（单词延续）
             if len(line) == 0 or not pred(line[0]):
@@ -1390,30 +1417,19 @@ class GrabHandler(Handler):
             return
 
         self.search_matches = []
-        query_lower = self.search_query.lower()
 
-        # 遍历所有行查找匹配
-        for line_idx, line in enumerate(self.lines):
-            line_num = line_idx + 1  # 行号从1开始
-            plain = unstyled(line)
-            plain_lower = plain.lower()
+        # 使用正则引擎进行大小写不敏感搜索
+        pattern = re.compile(re.escape(self.search_query), re.IGNORECASE)
 
-            # 在当前行中查找所有匹配位置
-            start_pos = 0
-            while True:
-                pos = plain_lower.find(query_lower, start_pos)
-                if pos == -1:
-                    break
+        # 使用预处理的缓存（避免重复调用 unstyled）
+        for line_num in range(1, len(self.lines) + 1):
+            plain = self._unstyled_cache[line_num]
 
-                # 计算显示宽度（处理宽字符）
-                col = wcswidth(plain[:pos])
-
-                # 计算 Position（需要转换为屏幕坐标）
-                # 暂时假设使用当前 top_line，后面会调整
+            # 使用 finditer 找到所有匹配（比循环 find 更高效）
+            for match in pattern.finditer(plain):
+                col = wcswidth(plain[:match.start()])
                 match_pos = Position(col, 0, line_num)
                 self.search_matches.append(match_pos)
-
-                start_pos = pos + 1
 
         if not self.search_matches:
             # 没有找到匹配，退出搜索模式
@@ -1612,9 +1628,9 @@ class GrabHandler(Handler):
         for line in range(start_line, end_line + 1):
             raw_line = self.lines[line - 1]
             has_wrap_marker = WRAP_MARKER in raw_line  # 在 unstyled() 之前检测
-            plain = unstyled(raw_line)
+            plain = self._unstyled_cache[line]
             start_x, end_x = self.mark_type.selection_in_line(
-                line, expanded_start, expanded_end, wcswidth(plain))
+                line, expanded_start, expanded_end, self._width_cache[line])
             if start_x is not None and end_x is not None:
                 line_slice, _half = string_slice(plain, start_x, end_x)
                 lines_with_markers.append((line_slice.rstrip(), has_wrap_marker))
