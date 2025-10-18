@@ -472,7 +472,7 @@ class GrabHandler(Handler):
 
         # g-pending 状态：等待 g 前缀键后的按键输入
         # False 表示无 pending g
-        # True 表示等待 g 后的命令（如 gg, g_, gj, gk 等）
+        # True 表示等待 g 后的命令（如 gg, gj, gk 等）
         self.pending_g = False  # type: bool
 
         # Operating System Command (OSC); command number 52
@@ -683,12 +683,6 @@ class GrabHandler(Handler):
         # g + g = 跳转到顶部
         if key == 'g':
             self.move('top')
-            self.pending_g = False
-            return
-
-        # g + _ = 跳转到行尾非空白字符
-        if key == '_':
-            self.move('last_nonwhite')
             self.pending_g = False
             return
 
