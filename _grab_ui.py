@@ -470,6 +470,11 @@ class GrabHandler(Handler):
         # 'y' 表示等待 motion 来执行 yank 操作
         self.pending_operator = None  # type: Optional[str]
 
+        # g-pending 状态：等待 g 前缀键后的按键输入
+        # False 表示无 pending g
+        # True 表示等待 g 后的命令（如 gg, g_, gj, gk 等）
+        self.pending_g = False  # type: bool
+
         # Operating System Command (OSC); command number 52
         # c — clipboard
         # p — primary
@@ -663,6 +668,45 @@ class GrabHandler(Handler):
         # 其他按键：取消 pending operator（不识别的 motion）
         self.pending_operator = None
 
+    def _handle_pending_g(self, key_event: KeyEvent) -> None:
+        """处理 g 前缀键后的按键事件"""
+        if key_event.type not in [kk.PRESS, kk.REPEAT]:
+            return
+
+        key = key_event.key
+
+        # Escape 键：取消 pending g
+        if key == 'ESCAPE':
+            self.pending_g = False
+            return
+
+        # g + g = 跳转到顶部
+        if key == 'g':
+            self.move('top')
+            self.pending_g = False
+            return
+
+        # g + _ = 跳转到行尾非空白字符
+        if key == '_':
+            self.move('last_nonwhite')
+            self.pending_g = False
+            return
+
+        # g + j = 向下移动（在 kitty_grab 中等同于 j）
+        if key == 'j':
+            self.move('down')
+            self.pending_g = False
+            return
+
+        # g + k = 向上移动（在 kitty_grab 中等同于 k）
+        if key == 'k':
+            self.move('up')
+            self.pending_g = False
+            return
+
+        # 其他按键：取消 pending g（不识别的命令）
+        self.pending_g = False
+
     def on_key_event(self, key_event: KeyEvent, in_bracketed_paste: bool = False) -> None:
         # 如果处于搜索输入模式，特殊处理键盘事件
         if self.search_mode is not None:
@@ -674,7 +718,21 @@ class GrabHandler(Handler):
             self._handle_pending_operator(key_event)
             return
 
+        # 如果处于 g-pending 模式，特殊处理键盘事件
+        if self.pending_g:
+            self._handle_pending_g(key_event)
+            return
+
         action = self.shortcut_action(key_event)
+
+        # 如果没有映射，且按下的是 'g' 键（无修饰符），进入 g-pending 状态
+        if (action is None and
+            key_event.type in [kk.PRESS, kk.REPEAT] and
+            key_event.key == 'g' and
+            key_event.mods == 0):
+            self.pending_g = True
+            return
+
         if (key_event.type not in [kk.PRESS, kk.REPEAT]
                 or action is None):
             return

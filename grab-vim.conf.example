@@ -42,7 +42,7 @@ map Ctrl+d      move page down
 map 0           move first
 map ^           move first nonwhite
 map $           move last nonwhite
-map g           move top
+# map g           move top  # 已移除：使用 gg 跳转到顶部（Vim 风格）
 map G           move bottom
 map b           move word left
 map w           move word right
