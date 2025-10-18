@@ -904,14 +904,17 @@ class GrabHandler(Handler):
         end_line = self._find_logical_line_end(self.point.line)
         line = self._unstyled_cache[end_line]
         suffix = ''.join(takewhile(str.isspace, reversed(line)))
-        x = wcswidth(line[:len(line) - len(suffix)])
+        # 减 1 以指向最后一个字符的位置，而不是字符后的位置
+        x = max(0, wcswidth(line[:len(line) - len(suffix)]) - 1)
         return self._absolute_line_to_position(end_line, x=x)
 
     def last(self) -> Position:
         """跳到逻辑行的末尾（vim $ 命令）"""
         end_line = self._find_logical_line_end(self.point.line)
         line = self._unstyled_cache[end_line]
-        return self._absolute_line_to_position(end_line, x=wcswidth(line))
+        # 减 1 以指向最后一个字符的位置
+        x = max(0, wcswidth(line) - 1)
+        return self._absolute_line_to_position(end_line, x=x)
 
     def top(self) -> Position:
         return Position(0, 0, 1)
