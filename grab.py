@@ -1,4 +1,5 @@
 import os
+import re
 from typing import Any, Dict, List, Sequence
 
 from kittens.tui.handler import result_handler
@@ -26,7 +27,25 @@ def handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, 
         return
     content = window.as_text(as_ansi=True, add_history=True,
                              add_wrap_markers=True)
+    # convert all newlines to UNIX-style, but keep new-line wrap markers
+    # '=65h' used as placeholder (looks like unused OSC)
+
+    # Kitty wrap marker 格式分析（基于源代码 kitty/line.c）:
+    # 1. 有 SGR 重置: 行内容 + \x1b[m + \r (当 ansibuf->len > 0)
+    # 2. 无 SGR 重置: 行内容 + \r (当 ansibuf->len == 0，空行或只有空格)
+
+    # 步骤1: 转换带 SGR 重置的 wrap marker
+    content = re.sub(r'\x1b\[[0-9;]*m\r\n', '\x1b[=65h\n', content)
+    content = re.sub(r'\x1b\[[0-9;]*m\r(?!\n)', '\x1b[=65h\n', content)
+
+    # 步骤2: 转换不带 SGR 重置的 wrap marker（单独的 \r，但不是 \r\n 的一部分）
+    # 这种情况下，\r 后面可能直接跟着下一行内容（wrapped line）
+    # 注意：这里假设普通的行结束都是 \n 或 \r\n，所以单独的 \r 后跟非 \n 字符表示 wrap
+    content = re.sub(r'\r(?!\n)', '\x1b[=65h\n', content)
+
+    # 步骤3: 清理剩余的 \r\n 和 \r
     content = content.replace('\r\n', '\n').replace('\r', '\n')
+
     n_lines = content.count('\n')
     top_line = (n_lines - (window.screen.lines - 1) - window.screen.scrolled_by)
     boss._run_kitten(_grab_ui.__file__, args=[
