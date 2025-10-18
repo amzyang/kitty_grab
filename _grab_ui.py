@@ -709,6 +709,8 @@ class GrabHandler(Handler):
                 'l': 'right',            # yl: 复制右边一个字符
                 'j': 'down',             # yj: 复制当前行和下一行
                 'k': 'up',               # yk: 复制当前行和上一行
+                '-': 'line_up',          # y-: 复制到上一个逻辑行的第一个非空白字符
+                '+': 'line_down',        # y+: 复制到下一个逻辑行的第一个非空白字符
             }
 
             # 查找对应的 motion 方法
@@ -876,6 +878,47 @@ class GrabHandler(Handler):
                 else self.point.moved(dtop=1)
                 if self.point.line < len(self.lines)
                 else self.point)
+
+    def line_up(self) -> Position:
+        """移动到上一个逻辑行的第一个非空白字符（vim - 命令）"""
+        # 找到当前逻辑行的起始行号
+        current_logical_start = self._find_logical_line_start(self.point.line)
+
+        # 如果已经在第一行，无法向上移动
+        if current_logical_start <= 1:
+            return self.point
+
+        # 移动到上一个逻辑行（上一个逻辑行的末尾行）
+        prev_line = current_logical_start - 1
+
+        # 找到上一个逻辑行的起始行号
+        prev_logical_start = self._find_logical_line_start(prev_line)
+
+        # 获取该行内容并找到第一个非空白字符
+        line = self._unstyled_cache[prev_logical_start]
+        prefix = ''.join(takewhile(str.isspace, line))
+        x = wcswidth(prefix)
+
+        return self._absolute_line_to_position(prev_logical_start, x=x)
+
+    def line_down(self) -> Position:
+        """移动到下一个逻辑行的第一个非空白字符（vim + 命令）"""
+        # 找到当前逻辑行的结束行号
+        current_logical_end = self._find_logical_line_end(self.point.line)
+
+        # 如果已经在最后一行，无法向下移动
+        if current_logical_end >= len(self.lines):
+            return self.point
+
+        # 移动到下一个逻辑行（下一个逻辑行的起始行）
+        next_line = current_logical_end + 1
+
+        # 获取该行内容并找到第一个非空白字符
+        line = self._unstyled_cache[next_line]
+        prefix = ''.join(takewhile(str.isspace, line))
+        x = wcswidth(prefix)
+
+        return self._absolute_line_to_position(next_line, x=x)
 
     def page_up(self) -> Position:
         return self.mark_type.page_up(

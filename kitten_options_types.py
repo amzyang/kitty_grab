@@ -109,6 +109,10 @@ defaults.map = [
     (ParsedShortcut(mods=4, key_name='LEFT'), KeyAction('move', ('word_left',))),  # noqa
     # move
     (ParsedShortcut(mods=4, key_name='RIGHT'), KeyAction('move', ('word_right',))),  # noqa
+    # move
+    (ParsedShortcut(mods=0, key_name='-'), KeyAction('move', ('line_up',))),  # noqa
+    # move
+    (ParsedShortcut(mods=0, key_name='+'), KeyAction('move', ('line_down',))),  # noqa
     # scroll
     (ParsedShortcut(mods=4, key_name='UP'), KeyAction('scroll', ('up',))),  # noqa
     # scroll

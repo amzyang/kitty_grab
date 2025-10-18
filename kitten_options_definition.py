@@ -61,7 +61,9 @@ map('Move last',           'move e          move last')
 map('Move top',            'move Ctrl+Home  move top')
 map('Move bottom',         'move Ctrl+End   move bottom')
 map('Move word left',      'move Ctrl+Left  move word left')
-map('Move word right',     'move Ctrl+Right move word right', long_text=long_text)
+map('Move word right',     'move Ctrl+Right move word right')
+map('Move line up',        'move -          move line up')
+map('Move line down',      'move +          move line down', long_text=long_text)
 
 long_text = '''
 Scroll the buffer, if possible.
