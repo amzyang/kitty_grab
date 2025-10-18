@@ -1257,6 +1257,13 @@ class GrabHandler(Handler):
         self._execute_yank_motion(self.last_nonwhite())
 
     def confirm(self, *args: Any) -> None:
+        # 检查是否有实际选择
+        # NoRegion 表示 normal 模式，没有选择任何内容
+        if self.mark_type == NoRegion or self.mark is None:
+            # 没有选择内容，直接退出而不复制（避免清空剪贴板）
+            self.quit()
+            return
+
         start, end = self._start_end()
         lines_list = [
             line_slice.rstrip()
