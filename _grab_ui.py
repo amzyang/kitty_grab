@@ -630,6 +630,8 @@ class GrabHandler(Handler):
     def initialize(self) -> None:
         self.cmd.set_window_title('Grab – {}'.format(self.args.title))
         self.cmd.set_default_colors(cursor=self.opts.cursor)
+        # 设置光标为稳定的 block 形状
+        self.print('\x1b[2 q', end='')
         self._redraw()
 
     def perform_default_key_action(self, key_event: KeyEvent) -> bool:
