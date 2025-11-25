@@ -578,9 +578,20 @@ class GrabHandler(Handler):
         if start_x is None or end_x is None:
             return
 
+        line_width = self._width_cache[current_line]
         line_slice, half = string_slice(plain, start_x, end_x)
         self.cmd.set_cursor_position(start_x - (1 if half else 0), y)
         self.print('{}{}'.format(selection_sgr, line_slice), end='')
+
+        # block 模式下绘制虚拟区域高亮（超出行末的选区部分）
+        if self.mark_type == ColumnarRegion and end_x > line_width:
+            # 虚拟区域起始位置：行末或选区起始（取较大者）
+            virtual_start = max(start_x, line_width)
+            # 虚拟区域宽度，限制不超出屏幕
+            virtual_width = min(end_x, self.screen_size.cols) - virtual_start
+            if virtual_width > 0:
+                self.cmd.set_cursor_position(virtual_start, y)
+                self.print('{}{}'.format(selection_sgr, ' ' * virtual_width), end='')
 
     def _update(self) -> None:
         self.cmd.set_window_title('Grab – {} {} {},{}+{} to {},{}+{}'.format(
@@ -849,6 +860,7 @@ class GrabHandler(Handler):
         """向右移动一个字符（vim l 命令）
 
         如果到达行尾且当前行有 wrap marker，跳到下一个视觉行的开始（逻辑行延续）
+        在 block 模式下，允许移动到超出行末的虚拟位置（virtual edit）
         """
         # 获取当前行的实际内容
         line = self._unstyled_cache[self.point.line]
@@ -860,6 +872,13 @@ class GrabHandler(Handler):
             # 计算移动后的显示宽度
             new_x = wcswidth(line[:pos + 1])
             return Position(new_x, self.point.y, self.point.top_line)
+
+        # 到达行尾，block 模式下允许虚拟位置
+        if self.mode == 'block':
+            # 限制不超出屏幕宽度
+            if self.point.x + 1 < self.screen_size.cols:
+                return Position(self.point.x + 1, self.point.y, self.point.top_line)
+            return self.point
 
         # 到达行尾，检查是否有 wrap marker
         if self._has_wrap_marker(self.point.line) and self.point.line < len(self.lines):
@@ -1388,6 +1407,13 @@ class GrabHandler(Handler):
         self._select(direction, self.region_types[region_type])
 
     def set_mode(self, mode: ModeTypeStr) -> None:
+        # 从 block 模式切换到其他模式时，如果光标在虚拟位置，需要调整到行末
+        if self.mode == 'block' and mode != 'block':
+            line_width = self._width_cache.get(self.point.line, 0)
+            if self.point.x >= line_width:
+                # 光标在虚拟位置，调整到行末（最后一个字符）
+                new_x = max(0, line_width - 1)
+                self.point = Position(new_x, self.point.y, self.point.top_line)
         self.mode = mode
         self._select('noop', self.mode_types[mode])
 
