@@ -1171,7 +1171,8 @@ class GrabHandler(Handler):
             if result is not None:
                 target_line_idx, target_pos = result
                 target_line = self._unstyled_cache[target_line_idx + 1]
-                return self._absolute_line_to_position(target_line_idx + 1, x=wcswidth(target_line[:target_pos+1]))
+                # [:target_pos] 使光标落在词尾字符上，与本函数其他分支一致
+                return self._absolute_line_to_position(target_line_idx + 1, x=wcswidth(target_line[:target_pos]))
 
             return None
 
