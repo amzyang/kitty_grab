@@ -1,17 +1,11 @@
 from typing import Any, Callable, Iterable, Sequence, Tuple
 
-from kitty.conf.utils import KittensKeyDefinition, parse_kittens_key
+from kitty.conf.utils import (KeyFuncWrapper, KittensKeyDefinition, choices,
+                              parse_kittens_key)
 
 FuncArgsType = Tuple[str, Sequence[Any]]
 
-try:
-    from kitty.conf.utils import KeyFuncWrapper
-    func_with_args = KeyFuncWrapper[FuncArgsType]()
-except ImportError:
-    from kitty.conf.utils import key_func
-    func_with_args, args_funcs = key_func()
-    func_with_args.args_funcs = args_funcs
-
+func_with_args = KeyFuncWrapper[FuncArgsType]()
 
 
 def parse_map(val: str) -> Iterable[KittensKeyDefinition]:
@@ -20,32 +14,23 @@ def parse_map(val: str) -> Iterable[KittensKeyDefinition]:
         yield x
 
 
-def _choice(value: str, *allowed: str) -> str:
-    result = value.lower()
-    assert result in allowed
-    return result
+parse_region_type = choices('stream', 'columnar', 'line')
 
+parse_scroll_direction = choices('up', 'down')
 
-def parse_region_type(region_type: str) -> str:
-    return _choice(region_type, 'stream', 'columnar', 'line')
+parse_mode = choices('normal', 'visual', 'line', 'block')
+
+_direction = choices('left', 'right', 'up', 'down',
+                     'page up', 'page down',
+                     'first', 'first nonwhite',
+                     'last nonwhite', 'last',
+                     'top', 'bottom',
+                     'word left', 'word right', 'word end',
+                     'line up', 'line down')
 
 
 def parse_direction(direction: str) -> str:
-    return _choice(direction, 'left', 'right', 'up', 'down',
-                   'page up', 'page down',
-                   'first', 'first nonwhite',
-                   'last nonwhite', 'last',
-                   'top', 'bottom',
-                   'word left', 'word right', 'word end',
-                   'line up', 'line down').replace(' ', '_')
-
-
-def parse_scroll_direction(direction: str) -> str:
-    return _choice(direction, 'up', 'down')
-
-
-def parse_mode(mode: str) -> str:
-    return _choice(mode, 'normal', 'visual', 'line', 'block')
+    return _direction(direction).replace(' ', '_')
 
 
 @func_with_args('move')
@@ -75,9 +60,12 @@ def toggle_selection_end(func: Callable, same_line: str = '') -> Tuple[Callable,
     return func, (same_line,)
 
 
+_search_direction = choices('forward', 'backward')
+
+
 @func_with_args('search_start')
 def search_start(func: Callable, direction: str) -> Tuple[Callable, Tuple[str,]]:
-    return func, (_choice(direction, 'forward', 'backward'),)
+    return func, (_search_direction(direction),)
 
 # 无参数的 action（search_next、start_yank 等）不需要注册：
 # kitty 的 parse_kittens_func_args 对无参 action 直接返回 KeyAction(func, ())

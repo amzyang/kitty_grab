@@ -2,12 +2,7 @@ import re
 from typing import Any, Dict, List
 
 from kittens.tui.handler import result_handler
-try:
-    # For kitty v0.42+
-    from kitty.typing_compat import BossType
-except ModuleNotFoundError:
-    # Fallback for older versions of kitty.
-    from kitty.typing import BossType
+from kitty.typing_compat import BossType
 
 import _grab_ui
 

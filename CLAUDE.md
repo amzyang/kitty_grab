@@ -17,7 +17,7 @@ git clone https://github.com/yurikhan/kitty_grab.git
 map Alt+Insert kitten kitty_grab/grab.py
 ```
 
-**最低要求：** Kitty ≥ 0.21.2
+**最低要求：** Kitty ≥ 0.42（依赖 `kitty.typing_compat` 等现代 API，不维护旧版兼容）
 
 **配置文件：** 复制 `grab-vim.conf.example` 到 `~/.config/kitty/grab.conf`（无需重启 Kitty，下次激活时生效）
 
@@ -147,18 +147,12 @@ Position(x, y, top_line)
 
 ## Kitty 版本兼容性
 
-**最低要求：** Kitty ≥ 0.21.2
+面向现代 kitty API 开发，**不维护旧版本兼容 shim**：直接使用
+`kitty.typing_compat`（v0.42+）、`KeyFuncWrapper`、`kitty.conf.utils.choices`
+等现代接口（本机基于 kitty 0.48 验证）。
 
-**关键兼容性处理：**
-
-```python
-try:
-    # Kitty v0.42+
-    from kitty.typing_compat import BossType
-except ModuleNotFoundError:
-    # 旧版本 fallback
-    from kitty.typing import BossType
-```
+注意：kitty 以 `-O` 运行 Python（`__debug__=False`），代码中的 `assert`
+在运行时会被剥离——运行时校验必须用显式抛错（如 `choices()` 的 ValueError）。
 
 ## 文本处理
 
