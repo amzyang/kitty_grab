@@ -807,8 +807,9 @@ class GrabHandler(Handler):
         return self.point
 
     def up(self) -> Position:
+        # top_line 是 1-based，最小值 1；> 0 的旧守卫会滚出缓冲区顶部（KeyError: 0）
         return (self.point.moved(dy=-1) if self.point.y > 0 else
-                self.point.moved(dtop=-1) if self.point.top_line > 0 else
+                self.point.moved(dtop=-1) if self.point.top_line > 1 else
                 self.point)
 
     def down(self) -> Position:
