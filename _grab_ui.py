@@ -776,8 +776,7 @@ class GrabHandler(Handler):
         if self.point.line > 1 and self._has_wrap_marker(self.point.line - 1):
             # 上一行有 wrap marker，当前行是延续，跳到上一行末尾字符上
             return self._absolute_line_to_position(
-                self.point.line - 1,
-                x=max(0, self._width_cache[self.point.line - 1] - 1))
+                self.point.line - 1, x=self._last_char_x(self.point.line - 1))
 
         # 无 wrap 或已在第一行，停在当前位置
         return self.point
@@ -871,23 +870,22 @@ class GrabHandler(Handler):
         end_line = self._find_logical_line_end(self.point.line)
         line = self._unstyled_cache[end_line]
         suffix = ''.join(takewhile(str.isspace, reversed(line)))
-        # 减 1 以指向最后一个字符的位置，而不是字符后的位置
-        x = max(0, wcswidth(line[:len(line) - len(suffix)]) - 1)
+        # 落在该字符的起始列上（宽字符占两列，需在左半列）
+        x = self._char_start_x(line, len(line) - len(suffix))
         return self._absolute_line_to_position(end_line, x=x)
 
     def last(self) -> Position:
         """跳到逻辑行的末尾（vim $ 命令）"""
         end_line = self._find_logical_line_end(self.point.line)
-        # 减 1 以指向最后一个字符的位置
-        x = max(0, self._width_cache[end_line] - 1)
-        return self._absolute_line_to_position(end_line, x=x)
+        return self._absolute_line_to_position(
+            end_line, x=self._last_char_x(end_line))
 
     def top(self) -> Position:
         return Position(0, 0, 1)
 
     def bottom(self) -> Position:
         # 落在末行最后一个字符上（vim 语义，与 last() 的约定一致）
-        x = max(0, self._width_cache[len(self.lines)] - 1)
+        x = self._last_char_x(len(self.lines))
         y = min(len(self.lines) - self.point.top_line,
                 self.screen_size.rows - 1)
         return Position(x, y, len(self.lines) - y)
@@ -911,6 +909,20 @@ class GrabHandler(Handler):
         """返回指定行第一个非空白字符的屏幕列"""
         prefix = ''.join(takewhile(str.isspace, self._unstyled_cache[line_num]))
         return wcswidth(prefix)
+
+    @staticmethod
+    def _char_start_x(line: str, end_index: int) -> ScreenColumn:
+        """line[:end_index] 中最后一个字符的起始列。
+
+        宽字符（CJK）占两列，光标必须落在其左半列才能覆盖整个字，
+        因此不能用「宽度 - 1」——那会落在右半列上只显示半个光标。
+        """
+        return wcswidth(line[:max(0, end_index - 1)])
+
+    def _last_char_x(self, line_num: AbsoluteLine) -> ScreenColumn:
+        """指定行最后一个字符的起始列（空行为 0）"""
+        line = self._unstyled_cache[line_num]
+        return self._char_start_x(line, len(line))
 
     # Line-wrapping 辅助方法
 
@@ -1081,8 +1093,7 @@ class GrabHandler(Handler):
         else:
             # 无 wrap，跳到上一行末尾字符上
             return self._absolute_line_to_position(
-                self.point.line - 1,
-                x=max(0, self._width_cache[self.point.line - 1] - 1))
+                self.point.line - 1, x=self._last_char_x(self.point.line - 1))
 
 
     def word_right(self) -> Position:
@@ -1267,11 +1278,10 @@ class GrabHandler(Handler):
             mode = 'normal'
         # 从 block 模式切换到其他模式时，如果光标在虚拟位置，需要调整到行末
         if self.mode == 'block' and mode != 'block':
-            line_width = self._width_cache[self.point.line]
-            if self.point.x >= line_width:
-                # 光标在虚拟位置，调整到行末（最后一个字符）
-                new_x = max(0, line_width - 1)
-                self.point = Position(new_x, self.point.y, self.point.top_line)
+            if self.point.x >= self._width_cache[self.point.line]:
+                # 光标在虚拟位置，调整到行末最后一个字符的起始列
+                self.point = Position(self._last_char_x(self.point.line),
+                                      self.point.y, self.point.top_line)
         self.mode = mode
         self._select('noop', self.mode_types[mode])
 
