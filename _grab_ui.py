@@ -763,13 +763,21 @@ class GrabHandler(Handler):
         如果在行首且上一行有 wrap marker，跳到上一行末尾（逻辑行延续）
         """
         if self.point.x > 0:
-            return self.point.moved(dx=-1)
+            # 按字符（而非列）左移，与 right() 对称；宽字符一步跨其全部列
+            line = self._unstyled_cache[self.point.line]
+            pos = truncate_point_for_length(line, self.point.x)
+            if pos == 0:
+                # 位于首字符（可能在宽字符中间列）：归位到行首
+                return Position(0, self.point.y, self.point.top_line)
+            return Position(wcswidth(line[:pos - 1]),
+                            self.point.y, self.point.top_line)
 
         # 在行首，检查上一行是否有 wrap marker
         if self.point.line > 1 and self._has_wrap_marker(self.point.line - 1):
-            # 上一行有 wrap marker，当前行是延续，跳到上一行末尾
+            # 上一行有 wrap marker，当前行是延续，跳到上一行末尾字符上
             return self._absolute_line_to_position(
-                self.point.line - 1, x=self._width_cache[self.point.line - 1])
+                self.point.line - 1,
+                x=max(0, self._width_cache[self.point.line - 1] - 1))
 
         # 无 wrap 或已在第一行，停在当前位置
         return self.point
@@ -785,22 +793,22 @@ class GrabHandler(Handler):
         # 将显示列位置转换为字符串索引
         pos = truncate_point_for_length(line, self.point.x)
 
-        # 检查是否还可以向右移动（未到达行尾）
-        if pos < len(line):
-            # 计算移动后的显示宽度
-            new_x = wcswidth(line[:pos + 1])
-            return Position(new_x, self.point.y, self.point.top_line)
-
-        # 到达行尾，block 模式下允许虚拟位置
+        # block 模式 virtual edit：先走到行尾后一格，再逐列右移到屏幕右缘
         if self.mode == 'block':
-            # 限制不超出屏幕宽度
+            if pos < len(line):
+                return Position(wcswidth(line[:pos + 1]),
+                                self.point.y, self.point.top_line)
             if self.point.x + 1 < self.screen_size.cols:
                 return Position(self.point.x + 1, self.point.y, self.point.top_line)
             return self.point
 
-        # 到达行尾，检查是否有 wrap marker
+        # vim 语义：光标不越过行尾最后一个字符
+        if pos + 1 < len(line):
+            return Position(wcswidth(line[:pos + 1]),
+                            self.point.y, self.point.top_line)
+
+        # 已在行尾字符上，有 wrap marker 则跳到下一个视觉行的开始（逻辑行延续）
         if self._has_wrap_marker(self.point.line) and self.point.line < len(self.lines):
-            # 有 wrap marker，跳到下一个视觉行的开始（逻辑行延续）
             return self._absolute_line_to_position(self.point.line + 1, x=0)
 
         # 无 wrap marker 或已到最后一行，停在当前位置
@@ -878,7 +886,8 @@ class GrabHandler(Handler):
         return Position(0, 0, 1)
 
     def bottom(self) -> Position:
-        x = self._width_cache[len(self.lines)]
+        # 落在末行最后一个字符上（vim 语义，与 last() 的约定一致）
+        x = max(0, self._width_cache[len(self.lines)] - 1)
         y = min(len(self.lines) - self.point.top_line,
                 self.screen_size.rows - 1)
         return Position(x, y, len(self.lines) - y)
@@ -1070,9 +1079,10 @@ class GrabHandler(Handler):
                 pos = pos - len(''.join(takewhile(pred, reversed(prev_line[:pos]))))
             return self._absolute_line_to_position(self.point.line - 1, x=wcswidth(prev_line[:pos]))
         else:
-            # 无 wrap，跳到上一行末尾
+            # 无 wrap，跳到上一行末尾字符上
             return self._absolute_line_to_position(
-                self.point.line - 1, x=self._width_cache[self.point.line - 1])
+                self.point.line - 1,
+                x=max(0, self._width_cache[self.point.line - 1] - 1))
 
 
     def word_right(self) -> Position:
