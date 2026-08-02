@@ -103,7 +103,8 @@ Position(x, y, top_line)
    map('Description', 'action_name key_name action_name arg1 arg2')
    ```
 
-2. **添加参数处理函数** (`kitten_options_utils.py`)
+2. **添加参数处理函数** (`kitten_options_utils.py`)——**仅带参数的 action 需要**；
+   无参数的 action（如 `search_next`）kitty 会直接返回 `KeyAction(func, ())`，无需注册
    ```python
    @func_with_args("action_name")
    def action_name(func: Callable, arg1: str) -> Tuple[Callable, Tuple[str,]]:

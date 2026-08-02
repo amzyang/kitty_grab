@@ -20,34 +20,32 @@ def parse_map(val: str) -> Iterable[KittensKeyDefinition]:
         yield x
 
 
-def parse_region_type(region_type: str) -> str:
-    result = region_type.lower()
-    assert result in ['stream', 'columnar']
+def _choice(value: str, *allowed: str) -> str:
+    result = value.lower()
+    assert result in allowed
     return result
+
+
+def parse_region_type(region_type: str) -> str:
+    return _choice(region_type, 'stream', 'columnar', 'line')
 
 
 def parse_direction(direction: str) -> str:
-    direction_lc = direction.lower()
-    assert direction_lc in ['left', 'right', 'up', 'down',
-                            'page up', 'page down',
-                            'first', 'first nonwhite',
-                            'last nonwhite', 'last',
-                            'top', 'bottom',
-                            'word left', 'word right', 'word end',
-                            'line up', 'line down']
-    return direction_lc.replace(' ', '_')
+    return _choice(direction, 'left', 'right', 'up', 'down',
+                   'page up', 'page down',
+                   'first', 'first nonwhite',
+                   'last nonwhite', 'last',
+                   'top', 'bottom',
+                   'word left', 'word right', 'word end',
+                   'line up', 'line down').replace(' ', '_')
 
 
 def parse_scroll_direction(direction: str) -> str:
-    result = direction.lower()
-    assert result in ['up', 'down']
-    return result
+    return _choice(direction, 'up', 'down')
 
 
 def parse_mode(mode: str) -> str:
-    result = mode.lower()
-    assert result in ['normal', 'visual', 'line', 'block']
-    return result
+    return _choice(mode, 'normal', 'visual', 'line', 'block')
 
 
 @func_with_args('move')
@@ -79,25 +77,7 @@ def toggle_selection_end(func: Callable, same_line: str = '') -> Tuple[Callable,
 
 @func_with_args('search_start')
 def search_start(func: Callable, direction: str) -> Tuple[Callable, Tuple[str,]]:
-    assert direction in ['forward', 'backward']
-    return func, (direction,)
+    return func, (_choice(direction, 'forward', 'backward'),)
 
-
-@func_with_args('search_next')
-def search_next(func: Callable) -> Tuple[Callable, Tuple]:
-    return func, ()
-
-
-@func_with_args('search_prev')
-def search_prev(func: Callable) -> Tuple[Callable, Tuple]:
-    return func, ()
-
-
-@func_with_args('start_yank')
-def start_yank(func: Callable) -> Tuple[Callable, Tuple]:
-    return func, ()
-
-
-@func_with_args('yank_to_eol')
-def yank_to_eol(func: Callable) -> Tuple[Callable, Tuple]:
-    return func, ()
+# 无参数的 action（search_next、start_yank 等）不需要注册：
+# kitty 的 parse_kittens_func_args 对无参 action 直接返回 KeyAction(func, ())

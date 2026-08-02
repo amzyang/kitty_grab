@@ -1,15 +1,14 @@
 from base64 import b64encode
-from functools import total_ordering
 from itertools import takewhile
 import json
 import os.path
 import re
+import subprocess
 import sys
 from typing import (TYPE_CHECKING, Any, Callable, Dict, Iterable, List,
                     NamedTuple, Optional, Set, Tuple, Type, Union)
 import unicodedata
 
-from kitty.boss import Boss
 from kitty.cli import parse_args
 from kitten_options_types import Options, defaults
 from kitten_options_parse import create_result_dict, merge_result_dicts, parse_conf_item
@@ -23,18 +22,18 @@ from kittens.tui.handler import Handler
 from kittens.tui.loop import Loop
 
 
-try:
-    from kitty.clipboard import set_clipboard_string
-except ImportError:
-    from kitty.fast_data_types import set_clipboard_string
-
-
 if TYPE_CHECKING:
     from typing_extensions import TypedDict
     ResultDict = TypedDict('ResultDict', {'copy': str})
 
 # Line-wrapping 标记常量
 WRAP_MARKER = '\x1b[=65h'
+
+# unstyled() 使用的预编译正则（性能优化，对齐 grab.py 的做法）
+_SGR_PATTERN = re.compile(r'\x1b\[[0-9;:]*m')
+_OSC_PATTERN = re.compile(r'\x1b\](?:[^\x07\x1b]+|\x1b[^\\])*(?:\x1b\\|\x07)')
+_OSC_133_PATTERN = re.compile(r'\x1b\]133[^\x07\n]*\x07?')
+_OSC_GENERIC_PATTERN = re.compile(r'\x1b\][0-9]+;[^\x07\n]*\x07?')
 
 AbsoluteLine = int
 ScreenLine = int
@@ -100,7 +99,7 @@ class Position(PositionBase):
         scroll as little as possible to make both visible.
         Otherwise, scroll as much as possible towards other.
         """
-        #  @ 
+        #  @
         #  .|   .    @|   .    .
         # |.|  |.   |.|  |.   |.|
         # |*|  |*|  |*|  |*|  |*|
@@ -121,35 +120,30 @@ class Position(PositionBase):
     def __str__(self) -> str:
         return '{},{}+{}'.format(self.x, self.y, self.top_line)
 
+    # 按 (line, x) 比较而非 tuple 的 (x, y, top_line) 字典序；
+    # 继承自 tuple，六个运算符都会被 tuple 实现接管，必须全部覆盖
+    # （functools.total_ordering 在 tuple 子类上是静默 no-op，不可用）。
+    @property
+    def _key(self) -> Tuple[AbsoluteLine, ScreenColumn]:
+        return (self.line, self.x)
+
     def __lt__(self, other: Any) -> bool:
-        if not isinstance(other, Position):
-            return NotImplemented
-        return (self.line, self.x) < (other.line, other.x)
+        return self._key < other._key
 
     def __le__(self, other: Any) -> bool:
-        if not isinstance(other, Position):
-            return NotImplemented
-        return (self.line, self.x) <= (other.line, other.x)
+        return self._key <= other._key
 
     def __gt__(self, other: Any) -> bool:
-        if not isinstance(other, Position):
-            return NotImplemented
-        return (self.line, self.x) > (other.line, other.x)
+        return self._key > other._key
 
     def __ge__(self, other: Any) -> bool:
-        if not isinstance(other, Position):
-            return NotImplemented
-        return (self.line, self.x) >= (other.line, other.x)
+        return self._key >= other._key
 
     def __eq__(self, other: Any) -> bool:
-        if not isinstance(other, Position):
-            return NotImplemented
-        return (self.line, self.x) == (other.line, other.x)
+        return self._key == other._key
 
     def __ne__(self, other: Any) -> bool:
-        if not isinstance(other, Position):
-            return NotImplemented
-        return (self.line, self.x) != (other.line, other.x)
+        return self._key != other._key
 
 
 def _span(line: AbsoluteLine, *lines: AbsoluteLine) -> Set[AbsoluteLine]:
@@ -247,12 +241,6 @@ class Region:
 
 class NoRegion(Region):
     name = 'unselected'
-    uses_mark = False
-
-    @staticmethod
-    def line_outside_region(current_line: AbsoluteLine,
-                            start: Position, end: Position) -> bool:
-        return False
 
 
 class MarkedRegion(Region):
@@ -344,75 +332,29 @@ class ColumnarRegion(MarkedRegion):
             return _span(old_point.line, point.line) - {point.line}
 
 
-class LineRegion(MarkedRegion):
+class LineRegion(StreamRegion):
     """行级选择区域（类似 vim 的 linewise visual mode，V 键）
 
-    特性：
-    - 总是选择完整的行（从列 0 到行尾）
-    - 即使光标在行中间，也选择整行
-    - 起始行和结束行都包含完整内容
-
-    与 vim 的 linewise visual mode 对应：
-    - 按 V 进入此模式
-    - 选择区域总是整行高亮
-    - 复制时获得完整的行内容
+    与 StreamRegion 的唯一差异：无论光标在行的哪个位置，
+    选中行总是完整的行（从列 0 到行尾）。
     """
     name = 'line'
-
-    @staticmethod
-    def line_inside_region(current_line: AbsoluteLine,
-                           start: Position, end: Position) -> bool:
-        """判断 current_line 是否完全在选区内部
-
-        对于 LineRegion，与 StreamRegion 的行为相同
-        """
-        return start.line < current_line < end.line
 
     @staticmethod
     def selection_in_line(
             current_line: AbsoluteLine, start: Position, end: Position,
             maxx: ScreenColumn) -> SelectionInLine:
-        """返回 current_line 中被选中的列范围
-
-        LineRegion 的核心行为：总是返回完整行 (0, maxx)
-        这确保了无论光标在行的哪个位置，都选择整行
-
-        Args:
-            current_line: 当前行号（1-based 绝对行号）
-            start: 选区起始位置
-            end: 选区结束位置
-            maxx: 行的实际宽度（字符数，不是屏幕列数）
-
-        Returns:
-            (0, maxx): 选择整行
-            (None, None): 行不在选区内
-        """
         if LineRegion.line_outside_region(current_line, start, end):
             return None, None
         return (0, maxx)
 
-    @staticmethod
-    def lines_affected(mark: Optional[Position], old_point: Position,
-                       point: Position) -> Set[AbsoluteLine]:
-        """返回需要重绘的行集合
-
-        LineRegion 的行为与 StreamRegion 相同：
-        point 移动时，所有经过的行都需要重绘
-        """
-        return _span(old_point.line, point.line)
-
 
 ActionName = str
 ActionArgs = tuple
-ShortcutMods = int
-KeyName = str
 Namespace = Any  # kitty.cli.Namespace (< 0.17.0)
-OptionName = str
-OptionValues = Dict[OptionName, Any]
-TypeMap = Dict[OptionName, Callable[[Any], Any]]
 
 
-def load_config(*paths: str, overrides: Optional[Iterable[str]] = None) -> Options:
+def load_config() -> Options:
 
     def parse_config(lines: Iterable[str]) -> Dict[str, Any]:
         ans: Dict[str, Any] = create_result_dict()
@@ -426,22 +368,21 @@ def load_config(*paths: str, overrides: Optional[Iterable[str]] = None) -> Optio
     configs = list(resolve_config('/etc/xdg/kitty/grab.conf',
                                   os.path.join(config_dir, 'grab.conf'),
                                   config_files_on_cmd_line=[]))
-    overrides = tuple(overrides) if overrides is not None else ()
-    opts_dict, paths = _load_config(defaults, parse_config, merge_result_dicts, *configs, overrides=overrides)
+    opts_dict, paths = _load_config(defaults, parse_config, merge_result_dicts, *configs, overrides=())
     opts = Options(opts_dict)
     opts.config_paths = paths
-    opts.config_overrides = overrides
+    opts.config_overrides = ()
     return opts
 
 
 def unstyled(s: str) -> str:
     # 移除 SGR (Select Graphic Rendition) 序列
-    s = re.sub(r'\x1b\[[0-9;:]*m', '', s)
+    s = _SGR_PATTERN.sub('', s)
     # 移除 OSC (Operating System Command) 序列，包括 shell integration
-    s = re.sub(r'\x1b\](?:[^\x07\x1b]+|\x1b[^\\])*(?:\x1b\\|\x07)', '', s)
+    s = _OSC_PATTERN.sub('', s)
     # 额外清理各种可能的 shell integration 变种
-    s = re.sub(r'\x1b\]133[^\x07\n]*\x07?', '', s)  # 清理 ]133 shell integration
-    s = re.sub(r'\x1b\][0-9]+;[^\x07\n]*\x07?', '', s)  # 通用 OSC 序列清理
+    s = _OSC_133_PATTERN.sub('', s)
+    s = _OSC_GENERIC_PATTERN.sub('', s)
     # 移除 wrap marker 占位符（我们自定义的标记，用于标识 line-wrapping）
     s = s.replace(WRAP_MARKER, '')
     s = s.expandtabs()
@@ -496,6 +437,19 @@ class GrabHandler(Handler):
         self.search_query = ''            # type: str  # 当前输入的搜索词
         self.search_matches = []          # type: List[Position]  # 所有匹配位置列表
         self.current_match_index = -1     # type: int  # 当前匹配项索引
+        self._prev_search_len = 0         # type: int  # 搜索提示行上次的显示宽度
+        self._marker_set = False          # type: bool  # 是否已创建 kitty search marker
+
+        # word 字符集只解析一次（配置项或主 kitty 配置回退），
+        # _is_word_char 是 w/b/e 的每字符热路径
+        self._word_chars = (opts.select_by_word_characters
+                            or (json.loads(os.getenv('KITTY_COMMON_OPTS', '{}'))
+                                .get('select_by_word_characters', '@-./_~?&=%+#')))
+
+        # 选区 SGR 为会话常量，预先拼好（_draw_line 每行热路径）
+        self._selection_sgr = '\x1b[38{};48{}m'.format(
+            color_as_sgr(opts.selection_foreground),
+            color_as_sgr(opts.selection_background))
 
         for spec, action in self.opts.map:
             self.add_shortcut(action, spec)
@@ -513,55 +467,51 @@ class GrabHandler(Handler):
             self._width_cache[line_num] = wcswidth(plain)
             self._has_wrap[line_num] = WRAP_MARKER in line
 
-        # 第二阶段：构建逻辑行边界索引（性能优化）
+        # 第二阶段：构建逻辑行边界索引（性能优化，双 pass O(n)）
         self._logical_line_map = {}  # type: Dict[AbsoluteLine, Tuple[AbsoluteLine, AbsoluteLine]]
 
+        # 正向：逻辑行起始（上一行无 wrap marker 即为新逻辑行的开始）
+        starts = {}  # type: Dict[AbsoluteLine, AbsoluteLine]
         current_start = 1
         for line_num in range(1, len(lines) + 1):
-            # 检查上一行是否有 wrap marker
-            if line_num > 1 and self._has_wrap[line_num - 1]:
-                # 当前行是延续，不更新 current_start
-                pass
-            else:
-                # 当前行是新逻辑行的开始
+            if line_num == 1 or not self._has_wrap[line_num - 1]:
                 current_start = line_num
+            starts[line_num] = current_start
 
-            # 查找逻辑行的末尾
-            end_line = line_num
-            while end_line < len(lines) and self._has_wrap[end_line]:
-                end_line += 1
-
-            # 存储边界信息
-            self._logical_line_map[line_num] = (current_start, end_line)
+        # 反向：逻辑行末尾（本行无 wrap marker 即为逻辑行的末尾）
+        end_line = len(lines)
+        for line_num in range(len(lines), 0, -1):
+            if not self._has_wrap[line_num]:
+                end_line = line_num
+            self._logical_line_map[line_num] = (starts[line_num], end_line)
 
     def _start_end(self) -> Tuple[Position, Position]:
         start, end = sorted([self.point, self.mark or self.point])
         return self.mark_type.adjust(start, end)
 
-    def _draw_line(self, current_line: AbsoluteLine) -> None:
+    def _display_start_end(self) -> Tuple[Position, Position]:
+        """选区显示/复制用的边界；LineRegion 展开为完整逻辑行（处理 line-wrapping）"""
+        start, end = self._start_end()
+        if self.mark_type is not LineRegion:
+            return start, end
+        expanded_start = self._find_logical_line_start(start.line)
+        expanded_end = self._find_logical_line_end(end.line)
+        # 调整 y 使得 line 属性 (y + top_line) 等于展开后的行号
+        return (start._replace(y=expanded_start - start.top_line),
+                end._replace(y=expanded_end - end.top_line))
+
+    def _draw_line(self, current_line: AbsoluteLine,
+                   start: Position, end: Position) -> None:
         y = current_line - self.point.top_line  # type: ScreenLine
         line = self.lines[current_line - 1]
         clear_eol = '\x1b[m\x1b[K'
         sgr0 = '\x1b[m'
 
         plain = self._unstyled_cache[current_line]
-        selection_sgr = '\x1b[38{};48{}m'.format(
-            color_as_sgr(self.opts.selection_foreground),
-            color_as_sgr(self.opts.selection_background))
-        start, end = self._start_end()
-
-        # 对于 LineRegion，展开范围用于显示判断
-        if self.mark_type == LineRegion:
-            expanded_start_line, expanded_end_line = self._expand_line_selection_for_wrap(
-                start.line, end.line)
-            # 创建临时 Position，调整 y 使得 line 属性 (y + top_line) 等于展开后的行号
-            display_start = Position(start.x, expanded_start_line - start.top_line, start.top_line)
-            display_end = Position(end.x, expanded_end_line - end.top_line, end.top_line)
-        else:
-            display_start, display_end = start, end
+        selection_sgr = self._selection_sgr
 
         # anti-flicker optimization
-        if self.mark_type.line_inside_region(current_line, display_start, display_end):
+        if self.mark_type.line_inside_region(current_line, start, end):
             self.cmd.set_cursor_position(0, y)
             self.print('{}{}'.format(selection_sgr, plain),
                        end=clear_eol)
@@ -570,15 +520,15 @@ class GrabHandler(Handler):
         self.cmd.set_cursor_position(0, y)
         self.print('{}{}'.format(sgr0, line), end=clear_eol)
 
-        if self.mark_type.line_outside_region(current_line, display_start, display_end):
-            return
-
-        start_x, end_x = self.mark_type.selection_in_line(
-            current_line, display_start, display_end, self._width_cache[current_line])
-        if start_x is None or end_x is None:
+        if self.mark_type.line_outside_region(current_line, start, end):
             return
 
         line_width = self._width_cache[current_line]
+        start_x, end_x = self.mark_type.selection_in_line(
+            current_line, start, end, line_width)
+        if start_x is None or end_x is None:
+            return
+
         line_slice, half = string_slice(plain, start_x, end_x)
         self.cmd.set_cursor_position(start_x - (1 if half else 0), y)
         self.print('{}{}'.format(selection_sgr, line_slice), end='')
@@ -594,12 +544,8 @@ class GrabHandler(Handler):
                 self.print('{}{}'.format(selection_sgr, ' ' * virtual_width), end='')
 
     def _update(self) -> None:
-        self.cmd.set_window_title('Grab – {} {} {},{}+{} to {},{}+{}'.format(
-            self.args.title,
-            self.mark_type.name,
-            getattr(self.mark, 'x', None), getattr(self.mark, 'y', None),
-            getattr(self.mark, 'top_line', None),
-            self.point.x, self.point.y, self.point.top_line))
+        self.cmd.set_window_title('Grab – {} {} {} to {}'.format(
+            self.args.title, self.mark_type.name, self.mark, self.point))
 
         # 如果处于搜索输入模式，在屏幕底部显示搜索提示符
         if self.search_mode is not None:
@@ -616,7 +562,7 @@ class GrabHandler(Handler):
 
             # 如果输入变短，清除多余的旧字符（使用 wcswidth 计算显示宽度）
             display_width = wcswidth(search_line)
-            if hasattr(self, '_prev_search_len') and self._prev_search_len > display_width:
+            if self._prev_search_len > display_width:
                 spaces_to_clear = self._prev_search_len - display_width
                 self.print(' ' * spaces_to_clear, end='')
             self._prev_search_len = display_width
@@ -629,8 +575,14 @@ class GrabHandler(Handler):
             self.cmd.set_cursor_position(self.point.x, self.point.y)
 
     def _redraw_lines(self, lines: Iterable[AbsoluteLine]) -> None:
+        # 选区边界对本次重绘的所有行相同，只算一次；
+        # 只绘制可见区内的行（block 模式下 lines_affected 可能覆盖屏外大跨度）
+        start, end = self._display_start_end()
+        top = self.point.top_line
+        bottom = top + self.screen_size.rows
         for line in lines:
-            self._draw_line(line)
+            if top <= line < bottom:
+                self._draw_line(line, start, end)
         self._update()
 
     def _redraw(self) -> None:
@@ -650,11 +602,7 @@ class GrabHandler(Handler):
 
     def _handle_search_input(self, key_event: KeyEvent) -> None:
         """处理搜索输入模式下的键盘事件"""
-        if key_event.type not in [kk.PRESS, kk.REPEAT]:
-            return
-
         key = key_event.key
-        mods = key_event.mods
 
         # Enter 键：确认搜索
         if key == 'ENTER':
@@ -692,11 +640,7 @@ class GrabHandler(Handler):
 
     def _handle_pending_operator(self, key_event: KeyEvent) -> None:
         """处理 operator-pending 模式下的键盘事件"""
-        if key_event.type not in [kk.PRESS, kk.REPEAT]:
-            return
-
         key = key_event.key
-        mods = key_event.mods
 
         # Escape 键：取消 pending operator
         if key == 'ESCAPE':
@@ -739,38 +683,16 @@ class GrabHandler(Handler):
 
     def _handle_pending_g(self, key_event: KeyEvent) -> None:
         """处理 g 前缀键后的按键事件"""
+        self.pending_g = False
+        # gg 跳转到顶部，gj/gk 等同于 j/k；其他按键（含 Escape）只取消 pending
+        direction = {'g': 'top', 'j': 'down', 'k': 'up'}.get(key_event.key)
+        if direction is not None:
+            self.move(direction)
+
+    def on_key_event(self, key_event: KeyEvent, in_bracketed_paste: bool = False) -> None:
         if key_event.type not in [kk.PRESS, kk.REPEAT]:
             return
 
-        key = key_event.key
-
-        # Escape 键：取消 pending g
-        if key == 'ESCAPE':
-            self.pending_g = False
-            return
-
-        # g + g = 跳转到顶部
-        if key == 'g':
-            self.move('top')
-            self.pending_g = False
-            return
-
-        # g + j = 向下移动（在 kitty_grab 中等同于 j）
-        if key == 'j':
-            self.move('down')
-            self.pending_g = False
-            return
-
-        # g + k = 向上移动（在 kitty_grab 中等同于 k）
-        if key == 'k':
-            self.move('up')
-            self.pending_g = False
-            return
-
-        # 其他按键：取消 pending g（不识别的命令）
-        self.pending_g = False
-
-    def on_key_event(self, key_event: KeyEvent, in_bracketed_paste: bool = False) -> None:
         # 如果处于搜索输入模式，特殊处理键盘事件
         if self.search_mode is not None:
             self._handle_search_input(key_event)
@@ -789,15 +711,11 @@ class GrabHandler(Handler):
         action = self.shortcut_action(key_event)
 
         # 如果没有映射，且按下的是 'g' 键（无修饰符），进入 g-pending 状态
-        if (action is None and
-            key_event.type in [kk.PRESS, kk.REPEAT] and
-            key_event.key == 'g' and
-            key_event.mods == 0):
+        if action is None and key_event.key == 'g' and key_event.mods == 0:
             self.pending_g = True
             return
 
-        if (key_event.type not in [kk.PRESS, kk.REPEAT]
-                or action is None):
+        if action is None:
             return
         self.perform_action(action)
 
@@ -850,8 +768,8 @@ class GrabHandler(Handler):
         # 在行首，检查上一行是否有 wrap marker
         if self.point.line > 1 and self._has_wrap_marker(self.point.line - 1):
             # 上一行有 wrap marker，当前行是延续，跳到上一行末尾
-            prev_line = self._unstyled_cache[self.point.line - 1]
-            return self._absolute_line_to_position(self.point.line - 1, x=wcswidth(prev_line))
+            return self._absolute_line_to_position(
+                self.point.line - 1, x=self._width_cache[self.point.line - 1])
 
         # 无 wrap 或已在第一行，停在当前位置
         return self.point
@@ -902,44 +820,21 @@ class GrabHandler(Handler):
 
     def line_up(self) -> Position:
         """移动到上一个逻辑行的第一个非空白字符（vim - 命令）"""
-        # 找到当前逻辑行的起始行号
         current_logical_start = self._find_logical_line_start(self.point.line)
-
-        # 如果已经在第一行，无法向上移动
         if current_logical_start <= 1:
             return self.point
-
-        # 移动到上一个逻辑行（上一个逻辑行的末尾行）
-        prev_line = current_logical_start - 1
-
-        # 找到上一个逻辑行的起始行号
-        prev_logical_start = self._find_logical_line_start(prev_line)
-
-        # 获取该行内容并找到第一个非空白字符
-        line = self._unstyled_cache[prev_logical_start]
-        prefix = ''.join(takewhile(str.isspace, line))
-        x = wcswidth(prefix)
-
-        return self._absolute_line_to_position(prev_logical_start, x=x)
+        prev_logical_start = self._find_logical_line_start(current_logical_start - 1)
+        return self._absolute_line_to_position(
+            prev_logical_start, x=self._first_nonwhite_x(prev_logical_start))
 
     def line_down(self) -> Position:
         """移动到下一个逻辑行的第一个非空白字符（vim + 命令）"""
-        # 找到当前逻辑行的结束行号
         current_logical_end = self._find_logical_line_end(self.point.line)
-
-        # 如果已经在最后一行，无法向下移动
         if current_logical_end >= len(self.lines):
             return self.point
-
-        # 移动到下一个逻辑行（下一个逻辑行的起始行）
         next_line = current_logical_end + 1
-
-        # 获取该行内容并找到第一个非空白字符
-        line = self._unstyled_cache[next_line]
-        prefix = ''.join(takewhile(str.isspace, line))
-        x = wcswidth(prefix)
-
-        return self._absolute_line_to_position(next_line, x=x)
+        return self._absolute_line_to_position(
+            next_line, x=self._first_nonwhite_x(next_line))
 
     def page_up(self) -> Position:
         return self.mark_type.page_up(
@@ -959,9 +854,8 @@ class GrabHandler(Handler):
     def first_nonwhite(self) -> Position:
         """跳到逻辑行的第一个非空白字符（vim ^ 命令）"""
         start_line = self._find_logical_line_start(self.point.line)
-        line = self._unstyled_cache[start_line]
-        prefix = ''.join(takewhile(str.isspace, line))
-        return self._absolute_line_to_position(start_line, x=wcswidth(prefix))
+        return self._absolute_line_to_position(
+            start_line, x=self._first_nonwhite_x(start_line))
 
     def last_nonwhite(self) -> Position:
         """返回当前逻辑行最后一个非空白字符的位置"""
@@ -975,16 +869,15 @@ class GrabHandler(Handler):
     def last(self) -> Position:
         """跳到逻辑行的末尾（vim $ 命令）"""
         end_line = self._find_logical_line_end(self.point.line)
-        line = self._unstyled_cache[end_line]
         # 减 1 以指向最后一个字符的位置
-        x = max(0, wcswidth(line) - 1)
+        x = max(0, self._width_cache[end_line] - 1)
         return self._absolute_line_to_position(end_line, x=x)
 
     def top(self) -> Position:
         return Position(0, 0, 1)
 
     def bottom(self) -> Position:
-        x = wcswidth(self._unstyled_cache[len(self.lines)])
+        x = self._width_cache[len(self.lines)]
         y = min(len(self.lines) - self.point.top_line,
                 self.screen_size.rows - 1)
         return Position(x, y, len(self.lines) - y)
@@ -992,19 +885,22 @@ class GrabHandler(Handler):
     def noop(self) -> Position:
         return self.point
 
-    @property
-    def _select_by_word_characters(self) -> str:
-        return (self.opts.select_by_word_characters
-                or (json.loads(os.getenv('KITTY_COMMON_OPTS', '{}'))
-                    .get('select_by_word_characters', '@-./_~?&=%+#')))
-
     def _is_word_char(self, c: str) -> bool:
         return (unicodedata.category(c)[0] in 'LN'
-                or c in self._select_by_word_characters)
+                or c in self._word_chars)
 
     def _is_word_separator(self, c: str) -> bool:
-        return (unicodedata.category(c)[0] not in 'LN'
-                and c not in self._select_by_word_characters)
+        return not self._is_word_char(c)
+
+    def _char_class_pred(self, c: str) -> Callable[[str], bool]:
+        """返回与 c 同类（word 字符 / 分隔符）的判定谓词"""
+        return (self._is_word_char if self._is_word_char(c)
+                else self._is_word_separator)
+
+    def _first_nonwhite_x(self, line_num: AbsoluteLine) -> ScreenColumn:
+        """返回指定行第一个非空白字符的屏幕列"""
+        prefix = ''.join(takewhile(str.isspace, self._unstyled_cache[line_num]))
+        return wcswidth(prefix)
 
     # Line-wrapping 辅助方法
 
@@ -1020,66 +916,25 @@ class GrabHandler(Handler):
         return self._has_wrap.get(line_num, False)
 
     def _find_logical_line_start(self, from_line: int) -> int:
-        """向上追溯找到逻辑行的起始行号（优化版：使用预构建索引）
-
-        Args:
-            from_line: 开始查找的行号（1-based）
-
-        Returns:
-            逻辑行的起始行号（1-based）
-        """
-        if from_line in self._logical_line_map:
-            return self._logical_line_map[from_line][0]
-        # 边界情况（理论上不应该发生）
-        return from_line
+        """逻辑行的起始行号（1-based，预构建索引）"""
+        return self._logical_line_map[from_line][0]
 
     def _find_logical_line_end(self, from_line: int) -> int:
-        """向下追溯找到逻辑行的末尾行号（优化版：使用预构建索引）
+        """逻辑行的末尾行号（1-based，预构建索引）"""
+        return self._logical_line_map[from_line][1]
 
-        Args:
-            from_line: 开始查找的行号（1-based）
-
-        Returns:
-            逻辑行的末尾行号（1-based）
-        """
-        if from_line in self._logical_line_map:
-            return self._logical_line_map[from_line][1]
-        # 边界情况（理论上不应该发生）
-        return from_line
+    def _clamp_top_line(self, top_line: AbsoluteLine) -> AbsoluteLine:
+        """将 top_line 限制在 [1, 最大可滚动行] 内"""
+        return min(max(1, top_line),
+                   max(1, len(self.lines) - self.screen_size.rows + 1))
 
     def _absolute_line_to_position(self, target_line: int, x: int = 0) -> Position:
-        """将绝对行号转换为 Position（处理滚动和边界）
-
-        Args:
-            target_line: 目标绝对行号（1-based）
-            x: x 坐标
-
-        Returns:
-            调整后的 Position
-        """
-        line_offset = target_line - self.point.line
-        new_y = self.point.y + line_offset
-        new_top_line = self.point.top_line
-
-        # 向上滚动
-        while new_y < 0:
-            new_y += 1
-            new_top_line -= 1
-
-        # 向下滚动
-        while new_y >= self.screen_size.rows:
-            new_y -= 1
-            new_top_line += 1
-
-        # 边界检查
-        new_top_line = max(1, new_top_line)
-        max_top_line = max(1, len(self.lines) - self.screen_size.rows + 1)
-        new_top_line = min(new_top_line, max_top_line)
-
-        # 重新计算 y
-        new_y = target_line - new_top_line
-
-        return Position(x, new_y, new_top_line)
+        """将绝对行号转换为 Position（最小滚动使目标行可见，处理边界）"""
+        # 视图不动时保持 top_line，目标在视图外时滚动到最近可见位置
+        new_top_line = self._clamp_top_line(
+            max(target_line - self.screen_size.rows + 1,
+                min(self.point.top_line, target_line)))
+        return Position(x, target_line - new_top_line, new_top_line)
 
     def _is_word_split_at_wrap(self, line_num: int) -> bool:
         """检查指定行的 wrap 是否是单词分割
@@ -1155,8 +1010,7 @@ class GrabHandler(Handler):
             # 如果这行有单词
             if pos < len(line):
                 # 移动到第一个单词的末尾
-                pred = (self._is_word_char if self._is_word_char(line[pos])
-                        else self._is_word_separator)
+                pred = self._char_class_pred(line[pos])
                 while pos + 1 < len(line) and pred(line[pos + 1]):
                     pos += 1
                 return (line_idx, pos)
@@ -1171,9 +1025,6 @@ class GrabHandler(Handler):
         line = self._unstyled_cache[self.point.line]
         pos = truncate_point_for_length(line, self.point.x)
 
-        # 检查是否在行首且可能处于被分割单词的后半部分
-        current_line_starts_with_word = pos == 0 and len(line) > 0 and self._is_word_char(line[0])
-
         if pos > 0:
             # 跳过空白字符
             while pos > 0 and line[pos - 1].isspace():
@@ -1181,7 +1032,7 @@ class GrabHandler(Handler):
 
             # 跳过单词/分隔符
             if pos > 0:
-                pred = self._is_word_char if self._is_word_char(line[pos - 1]) else self._is_word_separator
+                pred = self._char_class_pred(line[pos - 1])
                 new_pos = pos - len(''.join(takewhile(pred, reversed(line[:pos]))))
 
                 # 检查是否到达行首且是单词分割
@@ -1198,7 +1049,6 @@ class GrabHandler(Handler):
         if self.point.line <= 1:
             return self.point
 
-        prev_line_raw = self.lines[self.point.line - 2]
         prev_line = self._unstyled_cache[self.point.line - 1]
 
         # 检查是否是单词分割（当前行首的单词延续）
@@ -1209,18 +1059,19 @@ class GrabHandler(Handler):
             return self._absolute_line_to_position(target_line, x=wcswidth(target_line_content[:target_pos]))
 
         # 不是单词分割，正常跳到上一行的单词
-        if WRAP_MARKER in prev_line_raw:
+        if self._has_wrap_marker(self.point.line - 1):
             # 有 wrap，在上一行查找单词
             pos = len(prev_line)
             while pos > 0 and prev_line[pos - 1].isspace():
                 pos -= 1
             if pos > 0:
-                pred = self._is_word_char if self._is_word_char(prev_line[pos - 1]) else self._is_word_separator
+                pred = self._char_class_pred(prev_line[pos - 1])
                 pos = pos - len(''.join(takewhile(pred, reversed(prev_line[:pos]))))
             return self._absolute_line_to_position(self.point.line - 1, x=wcswidth(prev_line[:pos]))
         else:
             # 无 wrap，跳到上一行末尾
-            return self._absolute_line_to_position(self.point.line - 1, x=wcswidth(prev_line))
+            return self._absolute_line_to_position(
+                self.point.line - 1, x=self._width_cache[self.point.line - 1])
 
 
     def word_right(self) -> Position:
@@ -1233,7 +1084,7 @@ class GrabHandler(Handler):
 
         if pos < len(line):
             # 在当前行内移动
-            pred = self._is_word_char if self._is_word_char(line[pos]) else self._is_word_separator
+            pred = self._char_class_pred(line[pos])
             new_pos = pos + len(''.join(takewhile(pred, line[pos:])))
             # 跳过空白字符，移动到下一个单词的开始
             while new_pos < len(line) and line[new_pos].isspace():
@@ -1306,7 +1157,7 @@ class GrabHandler(Handler):
 
                 # 找到单词末尾
                 if new_pos < len(next_line):
-                    pred = self._is_word_char if self._is_word_char(next_line[new_pos]) else self._is_word_separator
+                    pred = self._char_class_pred(next_line[new_pos])
                     while new_pos + 1 < len(next_line) and pred(next_line[new_pos + 1]):
                         new_pos += 1
                     return self._absolute_line_to_position(next_line_num, x=wcswidth(next_line[:new_pos]))
@@ -1323,12 +1174,7 @@ class GrabHandler(Handler):
 
             return None
 
-        # 如果已经到达行尾，尝试跨行
-        if pos >= len(line):
-            result = find_word_end_in_next_line()
-            return result if result is not None else self.point
-
-        # 向前移动一个字符
+        # 向前移动一个字符（truncate_point_for_length 保证 pos ≤ len(line)）
         pos += 1
 
         # 如果超出行尾，尝试跨行
@@ -1346,17 +1192,16 @@ class GrabHandler(Handler):
             if result is not None:
                 return result
             # 没有找到，返回当前行末尾
-            return Position(wcswidth(line), self.point.y, self.point.top_line)
+            return Position(self._width_cache[self.point.line],
+                            self.point.y, self.point.top_line)
 
         # 现在应该在单词字符或分隔符上，移动到该单词的末尾
-        pred = self._is_word_char if self._is_word_char(line[pos]) else self._is_word_separator
+        pred = self._char_class_pred(line[pos])
         while pos + 1 < len(line) and pred(line[pos + 1]):
             pos += 1
 
         # 跨 wrap 处理：检查是否需要继续在下一行查找单词末尾
         current_abs_line = self.point.line
-        current_y = self.point.y
-        current_top = self.point.top_line
 
         while pos + 1 >= len(line):  # 到达行尾
             # 检查是否有 wrap marker
@@ -1367,14 +1212,8 @@ class GrabHandler(Handler):
             if current_abs_line >= len(self.lines):
                 break
 
-            # 计算下一行的位置
-            if current_y < self.screen_size.rows - 1:
-                current_y += 1
-            else:
-                current_top += 1
-            current_abs_line += 1
-
             # 获取下一行内容
+            current_abs_line += 1
             line = self._unstyled_cache[current_abs_line]
 
             # 检查下一行开头是否是同类字符（单词延续）
@@ -1386,18 +1225,22 @@ class GrabHandler(Handler):
             while pos + 1 < len(line) and pred(line[pos + 1]):
                 pos += 1
 
-        return Position(wcswidth(line[:pos]), current_y, current_top)
+        return self._absolute_line_to_position(current_abs_line, x=wcswidth(line[:pos]))
+
+    def _repaint_after_move(self, old_point: Position) -> None:
+        """point 移动后按需重绘：滚动了就全量，否则只重绘受影响的行"""
+        if self.point.top_line != old_point.top_line:
+            self._redraw()
+        else:
+            self._redraw_lines(self.mark_type.lines_affected(
+                self.mark, old_point, self.point))
 
     def _select(self, direction: DirectionStr,
                 mark_type: Type[Region]) -> None:
         self._ensure_mark(mark_type)
         old_point = self.point
         self.point = (getattr(self, direction))()
-        if self.point.top_line != old_point.top_line:
-            self._redraw()
-        else:
-            self._redraw_lines(self.mark_type.lines_affected(
-                self.mark, old_point, self.point))
+        self._repaint_after_move(old_point)
 
     def move(self, direction: DirectionStr) -> None:
         self._select(direction, self.mode_types[self.mode])
@@ -1409,7 +1252,7 @@ class GrabHandler(Handler):
     def set_mode(self, mode: ModeTypeStr) -> None:
         # 从 block 模式切换到其他模式时，如果光标在虚拟位置，需要调整到行末
         if self.mode == 'block' and mode != 'block':
-            line_width = self._width_cache.get(self.point.line, 0)
+            line_width = self._width_cache[self.point.line]
             if self.point.x >= line_width:
                 # 光标在虚拟位置，调整到行末（最后一个字符）
                 new_x = max(0, line_width - 1)
@@ -1443,35 +1286,27 @@ class GrabHandler(Handler):
             self.point = self.point.scrolled_towards(
                 self.mark, self.screen_size.rows, len(self.lines))
 
-        # 如果滚动位置改变，需要完全重绘
-        if self.point.top_line != old_point.top_line:
-            self._redraw()
-        else:
-            # 否则只重绘受影响的行
-            self._redraw_lines(self.mark_type.lines_affected(
-                self.mark, old_point, self.point))
+        self._repaint_after_move(old_point)
+
+    @staticmethod
+    def _marker_cmd(*argv: str) -> None:
+        subprocess.run(['kitten', '@', *argv],
+                       capture_output=True, timeout=1, check=True)
 
     def _set_search_marker(self, query: str) -> None:
-        """使用 Kitty marker 功能高亮搜索匹配项"""
-        import subprocess
-        # 使用 itext 类型进行大小写不敏感匹配
-        # mark group 3 可以在 kitty.conf 中配置颜色
-        subprocess.run(
-            ['kitten', '@', 'create-marker', '--self=yes', 'itext', '3', query],
-            capture_output=True,
-            timeout=1,
-            check=True
-        )
+        """使用 Kitty marker 功能高亮搜索匹配项
+
+        itext 类型进行大小写不敏感匹配；mark group 3 可在 kitty.conf 中配置颜色
+        """
+        self._marker_cmd('create-marker', '--self=yes', 'itext', '3', query)
+        self._marker_set = True
 
     def _clear_search_marker(self) -> None:
-        """移除 Kitty marker 高亮"""
-        import subprocess
-        subprocess.run(
-            ['kitten', '@', 'remove-marker', '--self=yes'],
-            capture_output=True,
-            timeout=1,
-            check=True
-        )
+        """移除 Kitty marker 高亮（未创建过 marker 时不 fork 子进程）"""
+        if not self._marker_set:
+            return
+        self._marker_cmd('remove-marker', '--self=yes')
+        self._marker_set = False
 
     def search_start(self, direction: str) -> None:
         """进入搜索输入模式（vim / 或 ? 命令）"""
@@ -1557,11 +1392,7 @@ class GrabHandler(Handler):
         target_y = rows // 2
 
         # 计算 top_line 使得 abs_line 显示在屏幕中间
-        target_top_line = abs_line - target_y
-
-        # 边界检查
-        target_top_line = max(1, target_top_line)
-        target_top_line = min(len(self.lines) - rows + 1, target_top_line)
+        target_top_line = self._clamp_top_line(abs_line - target_y)
 
         # 计算新的 y 坐标
         new_y = abs_line - target_top_line
@@ -1633,13 +1464,9 @@ class GrabHandler(Handler):
         """复制当前行并退出（vim yy 命令）
 
         实现方式：
-        1. 临时设置 mark 和 mark_type 为 LineRegion
+        1. 设置 mark 和 mark_type 为 LineRegion
         2. 调用 confirm() 复制并退出
         """
-        # 保存当前状态
-        old_mark = self.mark
-        old_mark_type = self.mark_type
-
         # 设置 mark 为当前行的开始位置（LineRegion 会自动选择整行）
         self.mark = Position(0, self.point.y, self.point.top_line)
         self.mark_type = LineRegion
@@ -1657,25 +1484,6 @@ class GrabHandler(Handler):
         """
         self._execute_yank_motion(self.last_nonwhite())
 
-    def _expand_line_selection_for_wrap(self, start_line: AbsoluteLine,
-                                        end_line: AbsoluteLine) -> Tuple[AbsoluteLine, AbsoluteLine]:
-        """展开选择范围以包含完整的逻辑行（处理 line-wrapping）
-
-        检测被 wrap markers 分割的逻辑行，并展开选择范围。
-
-        Args:
-            start_line: 选择起始行号（1-based）
-            end_line: 选择结束行号（1-based）
-
-        Returns:
-            (expanded_start, expanded_end): 展开后的行号范围
-        """
-        # 使用辅助方法简化实现
-        expanded_start = self._find_logical_line_start(start_line)
-        expanded_end = self._find_logical_line_end(end_line)
-
-        return expanded_start, expanded_end
-
     def confirm(self, *args: Any) -> None:
         # 检查是否有实际选择
         # NoRegion 表示 normal 模式，没有选择任何内容
@@ -1684,30 +1492,18 @@ class GrabHandler(Handler):
             self.quit()
             return
 
-        start, end = self._start_end()
-
-        # 对于 LineRegion，展开选择范围以包含完整的逻辑行（处理 line-wrapping）
-        if self.mark_type == LineRegion:
-            start_line, end_line = self._expand_line_selection_for_wrap(
-                start.line, end.line)
-            # 创建临时 Position，调整 y 使得 line 属性 (y + top_line) 等于展开后的行号
-            expanded_start = Position(start.x, start_line - start.top_line, start.top_line)
-            expanded_end = Position(end.x, end_line - end.top_line, end.top_line)
-        else:
-            start_line, end_line = start.line, end.line
-            expanded_start, expanded_end = start, end
+        # LineRegion 已展开为完整逻辑行（处理 line-wrapping）
+        start, end = self._display_start_end()
 
         # 构建带 wrap 标记信息的列表
         lines_with_markers = []
-        for line in range(start_line, end_line + 1):
-            raw_line = self.lines[line - 1]
-            has_wrap_marker = WRAP_MARKER in raw_line  # 在 unstyled() 之前检测
+        for line in range(start.line, end.line + 1):
             plain = self._unstyled_cache[line]
             start_x, end_x = self.mark_type.selection_in_line(
-                line, expanded_start, expanded_end, self._width_cache[line])
+                line, start, end, self._width_cache[line])
             if start_x is not None and end_x is not None:
                 line_slice, _half = string_slice(plain, start_x, end_x)
-                lines_with_markers.append((line_slice.rstrip(), has_wrap_marker))
+                lines_with_markers.append((line_slice.rstrip(), self._has_wrap[line]))
 
         # 智能拼接：根据 wrap 标记决定是否插入换行符
         # 有 wrap 标记的行后面不加换行（继续拼接），无 wrap 标记的行后面加换行（逻辑行结束）
@@ -1717,17 +1513,10 @@ class GrabHandler(Handler):
             # 不是最后一行 且 当前行无 wrap 标记 → 加换行（逻辑行结束）
             if i < len(lines_with_markers) - 1 and not has_wrap:
                 parts.append('\n')
-            # 如果 has_wrap=True，什么都不加，下一行会直接拼接
 
         # 保留中间空行，清理首尾空行
-        copied_text = ''.join(parts).strip()
-        # 移除 wrap markers 以还原完整的逻辑行
-        copied_text = copied_text.replace(WRAP_MARKER + '\n', '').replace(WRAP_MARKER, '')
-        # 额外清理所有可能遗漏的 shell integration 和 ANSI 序列
-        copied_text = re.sub(r'\x1b\]133[^\x07\n]*\x07?', '', copied_text)
-        copied_text = re.sub(r'\x1b\][0-9]+[^\x07\n]*\x07?', '', copied_text)
-        copied_text = re.sub(r'\x1b\[[0-9;:]*m', '', copied_text)  # 清理遗漏的 SGR
-        self.result = {'copy': copied_text}
+        # （行文本来自 _unstyled_cache，SGR/OSC/wrap marker 已在 unstyled() 中剥离）
+        self.result = {'copy': ''.join(parts).strip()}
         self.quit_loop(0)
 
 
@@ -1777,7 +1566,7 @@ type=int
                                               b64encode(handler.result['copy'].encode('utf-8')),
                                               b'\x1b\\')))
         return {}
-    except Exception as e:
+    except Exception:
         from kittens.tui.loop import debug
         from traceback import format_exc
         debug(format_exc())

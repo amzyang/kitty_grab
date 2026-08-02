@@ -1,6 +1,5 @@
-import os
 import re
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List
 
 from kittens.tui.handler import result_handler
 try:
@@ -39,10 +38,10 @@ def handle_result(args: List[str], data: Dict[str, Any], target_window_id: int, 
     # 2. 无 SGR 重置: 行内容 + \r (当 ansibuf->len == 0，空行或只有空格)
 
     # 步骤1: 转换带 SGR 重置的 wrap marker（合并了 \r\n 和 \r 两种情况）
-    content = _SGR_CR_PATTERN.sub('\x1b[=65h', content)
+    content = _SGR_CR_PATTERN.sub(_grab_ui.WRAP_MARKER, content)
 
     # 步骤2: 转换不带 SGR 重置的 wrap marker（单独的 \r，但不是 \r\n 的一部分）
-    content = _LONE_CR_PATTERN.sub('\x1b[=65h\n', content)
+    content = _LONE_CR_PATTERN.sub(_grab_ui.WRAP_MARKER + '\n', content)
 
     # 步骤3: 清理剩余的 \r\n 和 \r
     content = content.replace('\r\n', '\n').replace('\r', '\n')
