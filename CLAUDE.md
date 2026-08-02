@@ -201,10 +201,21 @@ Position(x, y, top_line)
    - 最小 `top_line`: 1
    - 最大 `top_line`: `len(lines) - rows + 1`
 
-5. **测试环境**：
-   - 无法直接使用 `python3` 运行，因为 `kitty` 模块不在标准 Python 路径中
-   - 必须通过 `kitten` 命令在 Kitty 终端中测试
-   - 无自动化测试框架，需要手动测试所有功能
+5. **测试**：
+
+   ```bash
+   ./tests/run.sh      # 运行全部自动化测试
+   ```
+
+   - `kitty` 模块不在标准 Python 路径中，**不能用 `python3` 直接跑**；
+     测试经 `kitty +runpy` 在 kitty 自带 Python 环境中执行（runner 已封装）
+   - `tests/harness.py` 的 `make_handler()` mock 掉 `screen_size`/`cmd`/
+     `print`/`quit_loop`，可脱离 TUI 直接调用动作方法，复制结果落在
+     `handler.result`；断言用 `check()`——kitty 以 `-O` 运行，`assert` 会被剥离
+   - 新增测试：在 `tests/` 下建 `test_*.py`，runner 自动收集
+   - 涉及宽度/切片/单词边界/光标列的改动，**必须补 CJK 用例**
+     （见 `tests/test_vim_semantics.py` 的宽字符左半列断言）
+   - UI 渲染、按键绑定等仍需在 Kitty 中手动验证
 
 6. **参数类型**：
    - 快捷键系统传递的所有参数都是字符串类型
