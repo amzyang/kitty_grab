@@ -1250,6 +1250,9 @@ class GrabHandler(Handler):
         self._select(direction, self.region_types[region_type])
 
     def set_mode(self, mode: ModeTypeStr) -> None:
+        # vim toggle 语义：在 visual/line/block 模式下再按同一模式键，退回 normal
+        if mode != 'normal' and mode == self.mode:
+            mode = 'normal'
         # 从 block 模式切换到其他模式时，如果光标在虚拟位置，需要调整到行末
         if self.mode == 'block' and mode != 'block':
             line_width = self._width_cache[self.point.line]
