@@ -67,5 +67,28 @@ _search_direction = choices('forward', 'backward')
 def search_start(func: Callable, direction: str) -> Tuple[Callable, Tuple[str,]]:
     return func, (_search_direction(direction),)
 
+
+_find_direction = choices('forward', 'backward')
+
+_find_kind = choices('find', 'till')
+
+_find_scope = choices('buffer', 'line')
+
+
+@func_with_args('find_char')
+def find_char(func: Callable, args: str) -> Tuple[Callable, Tuple[str, str, str]]:
+    # scope 可省略，默认 buffer（跨行查找）
+    direction, kind, *rest = args.split(' ')
+    return func, (_find_direction(direction), _find_kind(kind),
+                  _find_scope(rest[0] if rest else 'buffer'))
+
+
+_repeat_find_mode = choices('same', 'reverse')
+
+
+@func_with_args('repeat_find')
+def repeat_find(func: Callable, mode: str) -> Tuple[Callable, Tuple[str,]]:
+    return func, (_repeat_find_mode(mode),)
+
 # 无参数的 action（search_next、start_yank 等）不需要注册：
 # kitty 的 parse_kittens_func_args 对无参 action 直接返回 KeyAction(func, ())

@@ -126,6 +126,30 @@ Position(x, y, top_line)
        # 实现逻辑
    ```
 
+### 待字符 motion（f/F/t/T）
+
+`f/F/t/T` 需要「按键后再等一个任意字符」，是第三种 pending 状态
+（另两种是 `pending_operator` 的 `y` 和 `pending_g` 的 `gg`）。
+
+`on_key_event` 的分派顺序是隐性契约，**不可调整**：
+
+```
+search_mode → pending_find → pending_operator → pending_g → shortcut_action
+```
+
+`pending_find` 必须排在 `pending_operator` 之前——`yf<char>` 期间两者同时
+非空，顺序反了 `f` 会被当成 yank 的 motion 键吞掉。
+
+其他约定：
+- 查找失败时光标不动，且必须撤销 `pending_operator`，否则 `confirm()` 会把
+  原地的空选区当成 yank 内容复制并退出
+- 目标字符取 `key_event.text[0]`（vim 语义是单字符；输入法一次上屏多字时只取首字）；
+  `text` 为空的按键（Escape、方向键）取消查找
+- 落点一律经 `_flat_index_to_position` 换算成目标字符的**起始列**，
+  绝不用「目标列 ±1」——宽字符占两列，`±1` 会把光标停在右半列
+- 搜索范围由 map 的第三个参数决定：`buffer`（默认，跨行）或 `line`（当前逻辑行，
+  严格 vim 语义）；整 buffer 的平铺文本惰性构建并缓存在 `_buffer_flat`
+
 ### 示例：toggle_selection_end
 
 参考 `toggle_selection_end` 的实现（_grab_ui.py:653，kitten_options_utils.py:74，kitten_options_types.py:178）

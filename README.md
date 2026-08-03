@@ -109,6 +109,24 @@ Vim-like modal selecting is available.
 Copy the provided `grab-vim.conf.example` file, and copy it to `~/.config/kitty/grab.conf`.
 
 
+# Jumping to a Character
+
+Press `f`, `F`, `t` or `T`, then the character you want to jump to.
+`f`/`F` land on the character itself, `t`/`T` stop just before it;
+uppercase searches backwards. `;` repeats the last jump and `,` repeats
+it in the opposite direction. They also work as motions after `y`
+(`yf`, `yt`, `yF`, `yT`).
+
+Unlike vim, the search crosses line boundaries by default and covers the
+whole scrollback. To get the strict vim behavior, which stops at the end
+of the current logical line, add the `line` scope in `grab.conf`:
+
+    map f find_char forward find line
+    map F find_char backward find line
+    map t find_char forward till line
+    map T find_char backward till line
+
+
 # License
 
 GNU Public License version 3 or later.

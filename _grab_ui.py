@@ -1,4 +1,5 @@
 from base64 import b64encode
+from bisect import bisect_right
 from itertools import takewhile
 import json
 import os.path
@@ -28,6 +29,12 @@ if TYPE_CHECKING:
 
 # Line-wrapping 标记常量
 WRAP_MARKER = '\x1b[=65h'
+
+# operator-pending 下可接的待字符 motion：键 -> (direction, kind)
+FIND_KEYS = {'f': ('forward', 'find'),
+             'F': ('backward', 'find'),
+             't': ('forward', 'till'),
+             'T': ('backward', 'till')}
 
 # unstyled() 使用的预编译正则（性能优化，对齐 grab.py 的做法）
 _SGR_PATTERN = re.compile(r'\x1b\[[0-9;:]*m')
@@ -426,6 +433,16 @@ class GrabHandler(Handler):
         # True 表示等待 g 后的命令（如 gg, gj, gk 等）
         self.pending_g = False  # type: bool
 
+        # find-pending 状态：等待 f/F/t/T 的目标字符
+        # None 表示无 pending find，否则为 (direction, kind, scope)
+        self.pending_find = None  # type: Optional[Tuple[str, str, str]]
+
+        # 上一次 f/F/t/T 的查找参数 (direction, kind, scope, char)，供 ; 和 , 重复
+        self.last_find = None  # type: Optional[Tuple[str, str, str, str]]
+
+        # 整个 buffer 的平铺文本（buffer 范围查找用），首次使用时惰性构建
+        self._buffer_flat = None  # type: Optional[Tuple[str, List[int]]]
+
         # Operating System Command (OSC); command number 52
         # c — clipboard
         # p — primary
@@ -654,6 +671,13 @@ class GrabHandler(Handler):
                 self.yank_line()
                 return
 
+            # f/F/t/T 是待字符 motion：置 pending_find 但保留 operator，
+            # 落点要等下一个按键送来目标字符才能确定。
+            # 与 motion_map 一样是硬编码映射，不看用户 keymap，故 scope 取默认值
+            if key in FIND_KEYS:
+                self.pending_find = FIND_KEYS[key] + ('buffer',)
+                return
+
             # motion 键到方法名的映射表
             motion_map = {
                 '$': 'last_nonwhite',    # y$: 复制到行尾
@@ -681,6 +705,21 @@ class GrabHandler(Handler):
         # 其他按键：取消 pending operator（不识别的 motion）
         self.pending_operator = None
 
+    def _handle_pending_find(self, key_event: KeyEvent) -> None:
+        """处理 f/F/t/T 之后的目标字符输入"""
+        direction, kind, scope = self.pending_find
+        self.pending_find = None
+
+        # 无文本的按键（Escape、方向键、Enter）取消查找，连带撤销 operator
+        if not key_event.text:
+            self.pending_operator = None
+            return
+
+        # vim 语义是单字符目标；输入法一次上屏多字时只取首字
+        ch = key_event.text[0]
+        self.last_find = (direction, kind, scope, ch)
+        self._apply_find(direction, kind, scope, ch, repeat=False)
+
     def _handle_pending_g(self, key_event: KeyEvent) -> None:
         """处理 g 前缀键后的按键事件"""
         self.pending_g = False
@@ -696,6 +735,11 @@ class GrabHandler(Handler):
         # 如果处于搜索输入模式，特殊处理键盘事件
         if self.search_mode is not None:
             self._handle_search_input(key_event)
+            return
+
+        # f/F/t/T 等待目标字符：必须排在 operator 之前——yf 期间两者同时非空
+        if self.pending_find is not None:
+            self._handle_pending_find(key_event)
             return
 
         # 如果处于 operator-pending 模式，特殊处理键盘事件
@@ -957,6 +1001,41 @@ class GrabHandler(Handler):
             max(target_line - self.screen_size.rows + 1,
                 min(self.point.top_line, target_line)))
         return Position(x, target_line - new_top_line, new_top_line)
+
+    def _flat_text(self, start: AbsoluteLine,
+                   end: AbsoluteLine) -> Tuple[str, List[int]]:
+        """把 [start, end] 行拼成一个字符串，附每行在其中的起始偏移
+
+        f/t 的落点是目标字符的相邻字符，而相邻字符可能落在另一行上（wrap 折行
+        或 buffer 范围的下一行）；平铺后用下标 ±1 即可统一处理。
+        偏移数组按行存（而非按字符），整个 buffer 平铺也只占 O(行数) 内存。
+        """
+        chars = []      # type: List[str]
+        offsets = []    # type: List[int]
+        total = 0
+        for line_num in range(start, end + 1):
+            text = self._unstyled_cache[line_num]
+            offsets.append(total)
+            total += len(text)
+            chars.append(text)
+        return ''.join(chars), offsets
+
+    def _find_scope_range(self, scope: str) -> Tuple[AbsoluteLine, AbsoluteLine]:
+        """f/t 的搜索行范围：buffer 为整个缓冲区，line 为当前逻辑行"""
+        if scope == 'line':
+            return (self._find_logical_line_start(self.point.line),
+                    self._find_logical_line_end(self.point.line))
+        return 1, len(self.lines)
+
+    def _flat_index_to_position(self, index: int, start: AbsoluteLine,
+                                offsets: List[int]) -> Position:
+        """平铺下标还原为 Position（落在该字符的起始列）"""
+        # 空行的偏移与后一行相同，bisect_right 取最后一个，正好跳过空行
+        k = bisect_right(offsets, index) - 1
+        line_num = start + k
+        return self._absolute_line_to_position(
+            line_num,
+            x=wcswidth(self._unstyled_cache[line_num][:index - offsets[k]]))
 
     def _is_word_split_at_wrap(self, line_num: int) -> bool:
         """检查指定行的 wrap 是否是单词分割
@@ -1260,9 +1339,18 @@ class GrabHandler(Handler):
 
     def _select(self, direction: DirectionStr,
                 mark_type: Type[Region]) -> None:
+        # 先 _ensure_mark 再算 motion：page_up/page_down 会读 mark_type 和 mark
         self._ensure_mark(mark_type)
         old_point = self.point
         self.point = (getattr(self, direction))()
+        self._repaint_after_move(old_point)
+
+    def _move_point_to(self, target: Position,
+                       mark_type: Type[Region]) -> None:
+        """把 point 移到已算好的位置（供 f/t 这类带参 motion 用）"""
+        self._ensure_mark(mark_type)
+        old_point = self.point
+        self.point = target
         self._repaint_after_move(old_point)
 
     def move(self, direction: DirectionStr) -> None:
@@ -1445,6 +1533,83 @@ class GrabHandler(Handler):
         # 循环到上一个匹配
         self.current_match_index = (self.current_match_index - 1) % len(self.search_matches)
         self._jump_to_match(self.current_match_index)
+
+    def _flat_for_scope(self, scope: str) -> Tuple[str, AbsoluteLine, List[int]]:
+        """(拼接文本, 起始行号, 每行偏移)；buffer 范围只平铺一次并缓存"""
+        start, end = self._find_scope_range(scope)
+        if scope == 'line':
+            chars, offsets = self._flat_text(start, end)
+            return chars, start, offsets
+        if self._buffer_flat is None:
+            self._buffer_flat = self._flat_text(start, end)
+        chars, offsets = self._buffer_flat
+        return chars, start, offsets
+
+    def _find_char_position(self, direction: str, kind: str, scope: str,
+                            ch: str, repeat: bool) -> Optional[Position]:
+        """查找 ch 并返回 f/F/t/T 的落点（找不到返回 None）
+
+        repeat 为真时 till 的搜索起点额外偏移一格——Neovim 默认 cpoptions
+        不含 ';'，重复 t/T 会跳到下一个目标而不是卡在原地。
+        落点由 _flat_index_to_position 换算，恒落在目标字符的起始列：
+        宽字符占两列，用「列 ±1」会把光标停在右半列上。
+        """
+        chars, start, offsets = self._flat_for_scope(scope)
+        cursor = (offsets[self.point.line - start]
+                  + truncate_point_for_length(
+                      self._unstyled_cache[self.point.line], self.point.x))
+        till = kind == 'till'
+
+        if direction == 'forward':
+            found = chars.find(ch, cursor + (2 if till and repeat else 1))
+            target = found - 1 if till else found
+        else:
+            end = cursor - (1 if till and repeat else 0)
+            found = chars.rfind(ch, 0, max(end, 0))
+            target = found + 1 if till else found
+
+        if found < 0 or not 0 <= target < len(chars):
+            return None
+        return self._flat_index_to_position(target, start, offsets)
+
+    def _apply_find(self, direction: str, kind: str, scope: str, ch: str,
+                    repeat: bool) -> None:
+        """执行查找并移动光标；operator-pending 下改为执行 yank
+
+        查找失败时光标不动，并撤销 operator——否则会把原地的空选区
+        当成 yank 内容复制并退出。
+        """
+        target = self._find_char_position(direction, kind, scope, ch, repeat)
+        operator = self.pending_operator
+        self.pending_operator = None
+
+        if target is None:
+            return
+        if operator == 'y':
+            self._execute_yank_motion(target)
+            return
+        self._move_point_to(target, self.mode_types[self.mode])
+
+    def find_char(self, direction: str, kind: str,
+                  scope: str = 'buffer') -> None:
+        """进入 find-pending 状态，等待目标字符（vim f/F/t/T 命令）
+
+        scope 默认 'buffer'，在整个缓冲区内查找（不受行边界限制）；
+        'line' 则限制在当前逻辑行内，即严格的 vim 语义。
+        """
+        self.pending_find = (direction, kind, scope)
+
+    def repeat_find(self, mode: str) -> None:
+        """重复上一次 f/F/t/T（vim ; 和 , 命令）
+
+        , 只反转本次方向，不改写 last_find——其后的 ; 仍按原始方向重复。
+        """
+        if self.last_find is None:
+            return
+        direction, kind, scope, ch = self.last_find
+        if mode == 'reverse':
+            direction = 'backward' if direction == 'forward' else 'forward'
+        self._apply_find(direction, kind, scope, ch, repeat=True)
 
     def start_yank(self) -> None:
         """进入 operator-pending 状态，等待 motion 输入（vim y 命令）

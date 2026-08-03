@@ -165,6 +165,25 @@ Yank to end of line (Neovim Y command, equivalent to y$).
 Copies text from cursor position to end of current line.'''
 map('Yank to end of line', 'yank_to_eol Y yank_to_eol', long_text=long_text)
 
+long_text = '''
+Jump to a character (vim f/F/t/T commands).
+Press the key, then type the character to jump to.
+f/F land on the character itself, t/T stop just before it.
+The last argument is the search scope: buffer (default) searches the
+whole scrollback across line boundaries, line restricts the search to
+the current logical line, which is the strict vim behavior.
+Works as a motion after y as well (yf, yt, yF, yT).'''
+map('Find char forward',  'find_char f find_char forward find buffer')
+map('Find char backward', 'find_char F find_char backward find buffer')
+map('Till char forward',  'find_char t find_char forward till buffer')
+map('Till char backward', 'find_char T find_char backward till buffer', long_text=long_text)
+
+long_text = '''
+Repeat the last f/F/t/T jump (vim ; and , commands).
+; repeats in the same direction, , repeats in the opposite one.'''
+map('Repeat find',         'repeat_find ; repeat_find same')
+map('Repeat find reverse', 'repeat_find , repeat_find reverse', long_text=long_text)
+
 egr()  # }}}
 
 agr('behavior', 'Behavior')  # {{{

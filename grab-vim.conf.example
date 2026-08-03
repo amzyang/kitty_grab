@@ -59,6 +59,23 @@ map Ctrl+e scroll down
 #: Scroll the buffer, if possible.
 #: Cursor stays in the same position relative to the screen.
 
+# map f find_char forward find buffer
+# map F find_char backward find buffer
+# map t find_char forward till buffer
+# map T find_char backward till buffer
+# map ; repeat_find same
+# map , repeat_find reverse
+
+#: Jump to a character: press f/F/t/T, then the character to jump to.
+#: f/F land on the character itself, t/T stop just before it.
+#: ; repeats the last jump, , repeats it in the opposite direction.
+#: These are bound by default; the lines above only show the syntax.
+#: The last argument is the search scope. buffer (default) searches the
+#: whole scrollback across line boundaries; use line for the strict vim
+#: behavior, which stops at the current logical line:
+#:     map f find_char forward find line
+#: They also work as motions after y (yf, yt, yF, yT).
+
 map v                 set_mode visual
 map V                 set_mode line
 map Ctrl+v            set_mode block

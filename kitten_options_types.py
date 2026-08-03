@@ -197,4 +197,16 @@ defaults.map = [
     (ParsedShortcut(mods=0, key_name='y'), KeyAction('start_yank', ())),  # noqa
     # yank_to_eol
     (ParsedShortcut(mods=0, key_name='Y'), KeyAction('yank_to_eol', ())),  # noqa
+    # find_char
+    (ParsedShortcut(mods=0, key_name='f'), KeyAction('find_char', ('forward', 'find', 'buffer'))),  # noqa
+    # find_char
+    (ParsedShortcut(mods=0, key_name='F'), KeyAction('find_char', ('backward', 'find', 'buffer'))),  # noqa
+    # find_char
+    (ParsedShortcut(mods=0, key_name='t'), KeyAction('find_char', ('forward', 'till', 'buffer'))),  # noqa
+    # find_char
+    (ParsedShortcut(mods=0, key_name='T'), KeyAction('find_char', ('backward', 'till', 'buffer'))),  # noqa
+    # repeat_find
+    (ParsedShortcut(mods=0, key_name=';'), KeyAction('repeat_find', ('same',))),  # noqa
+    # repeat_find
+    (ParsedShortcut(mods=0, key_name=','), KeyAction('repeat_find', ('reverse',))),  # noqa
 ]
